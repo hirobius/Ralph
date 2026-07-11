@@ -44,6 +44,7 @@ jobs:
       pull-requests: write
       statuses: write
       id-token: write
+      actions: write # chain hop: dispatch the next run after an auto-merge
     steps:
       - uses: actions/checkout@v4
         with:
@@ -129,6 +130,15 @@ jobs:
             gh pr merge "$PR" --auto --squash ||
               echo "auto-merge not enabled yet (needs branch protection + Allow auto-merge)."
             gh pr comment "$PR" --body "✅ \`$RALPH_APPROVE_LABEL\` received — auto-merge armed; merges as soon as \`ralph-gate\` is green."
+            # Chain hop: a GITHUB_TOKEN merge emits no push event (GitHub's
+            # recursion guard), so the push→next-issue chain never fires for
+            # the loop's own merges. If the merge completed synchronously
+            # (checks were already green), dispatch the next iteration
+            # directly — workflow_dispatch is exempt from the guard.
+            if [ "$(gh pr view "$PR" --json state --jq .state)" = "MERGED" ]; then
+              gh workflow run ralph.yml --ref "${{ github.event.repository.default_branch }}" ||
+                echo "chain hop failed (non-fatal — needs actions: write on the caller)"
+            fi
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -326,6 +336,13 @@ jobs:
               gh pr comment "$PR" --body "✅ **ralph-gate: PASS** — gate green + AI-approved + human-authorized ($why). Auto-merging. $s"
               gh pr merge "$PR" --auto --squash ||
                 echo "auto-merge not enabled yet (needs branch protection + Allow auto-merge)."
+              # Chain hop (see the labeled fast-path): GITHUB_TOKEN merges emit
+              # no push event, so dispatch the next iteration when the merge
+              # completed synchronously.
+              if [ "$(gh pr view "$PR" --json state --jq .state)" = "MERGED" ]; then
+                gh workflow run ralph.yml --ref "${{ github.event.repository.default_branch }}" ||
+                  echo "chain hop failed (non-fatal — needs actions: write on the caller)"
+              fi
             else
               gh pr comment "$PR" --body "$(printf '🟢 **ralph-gate: PASS — awaiting approval.** Gate green + AI-approved. %s\n\nAdd the `%s` label to merge this PR, or pre-tag issues `%s` (alongside `ralph-ready`) to batch-approve future PRs.' "$s" "$RALPH_APPROVE_LABEL" "$RALPH_AUTO_MERGE_LABEL")"
             fi
