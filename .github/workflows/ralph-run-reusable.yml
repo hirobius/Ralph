@@ -174,8 +174,6 @@ jobs:
 
       - uses: pnpm/action-setup@v4
         if: steps.guard.outputs.issue != '' && steps.chain.outputs.chained != 'true'
-        with:
-          version: "10"
       - uses: actions/setup-node@v4
         if: steps.guard.outputs.issue != '' && steps.chain.outputs.chained != 'true'
         with:

@@ -25,11 +25,13 @@ NAME only — actual secrets live in each caller repo / the org.
    site-engine) pointing at:
    - `hirobius/ralph/.github/workflows/ralph-run-reusable.yml@main`
    - `hirobius/ralph/.github/workflows/ralph-gate-reusable.yml@main`
-3. Ensure secrets `CLAUDE_CODE_OAUTH_TOKEN` (+ optional `DISCORD_WEBHOOK_URL`)
+3. The repo's `package.json` must pin `"packageManager": "pnpm@<version>"` —
+   the engine installs whatever it names (no hardcoded version).
+4. Ensure secrets `CLAUDE_CODE_OAUTH_TOKEN` (+ optional `DISCORD_WEBHOOK_URL`)
    reach the repo (org secrets shared to it, or repo secrets).
-4. Branch protection on the default branch requiring the plain `ralph-gate`
+5. Branch protection on the default branch requiring the plain `ralph-gate`
    status check + "Allow auto-merge" in repo settings.
-5. Tag issues `ralph-ready` (+ `p0`–`p3` priority, + `ralph-auto` to
+6. Tag issues `ralph-ready` (+ `p0`–`p3` priority, + `ralph-auto` to
    batch-pre-approve merges); approve other PRs with the `ralph-approved`
    label. Full contract: `hirobius/ops/ralph/README.md`.
 
