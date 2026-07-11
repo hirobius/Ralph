@@ -35,12 +35,14 @@ jobs:
   ralph:
     runs-on: ubuntu-latest
     timeout-minutes: 90
-    permissions:
-      contents: write
-      issues: write
-      pull-requests: write
-      id-token: write
-      actions: write # chain hop: push runs re-dispatch themselves (see below)
+    # NO job-level permissions block — deliberately (ops#144). A reusable that
+    # requests a permission its caller doesn't grant startup-fails EVERY run
+    # in that repo (zero jobs, no error message), and callers are vendored
+    # files that skew behind the engine. Instead the job inherits exactly what
+    # the caller grants, and any step that needs an optional permission
+    # (actions: write for the chain hop) fails with a message naming the
+    # caller fix. Callers grant: contents/issues/pull-requests/id-token: write
+    # (+ actions: write for the chain hop) — see README.
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -147,8 +149,16 @@ jobs:
           # the model under a supported event. No loop risk: dispatch runs
           # never re-dispatch (this step is push-only), and the concurrency
           # group keeps the hop serialized.
-          gh workflow run "${{ github.workflow }}" -R "$GITHUB_REPOSITORY" \
-            --field issue="${{ steps.guard.outputs.issue }}"
+          if ! gh workflow run "${{ github.workflow }}" -R "$GITHUB_REPOSITORY" \
+            --field issue="${{ steps.guard.outputs.issue }}"; then
+            # Degrade legibly, never wedge: release the claim so the issue is
+            # re-claimable, then fail THIS run with the exact caller fix.
+            . ralph/lib.sh
+            delete_claim_ref "${{ steps.guard.outputs.issue }}" || true
+            echo "hop_failed=true" >> "$GITHUB_OUTPUT"
+            echo "::error::chain hop failed — caller lacks 'actions: write'. Add it under the ralph job's permissions in .github/workflows/ralph.yml (the push→dispatch hop needs it). Claim on #${{ steps.guard.outputs.issue }} released; re-trigger via workflow_dispatch or by re-adding ralph-ready."
+            exit 1
+          fi
           echo "Chained: dispatched '${{ github.workflow }}' for issue #${{ steps.guard.outputs.issue }}."
           echo "chained=true" >> "$GITHUB_OUTPUT"
 
@@ -216,7 +226,9 @@ jobs:
             - If blocked or ambiguous, comment on the issue and STOP.
 
       - name: Reconcile — state decides what actually happened
-        if: always() && steps.guard.outputs.issue != '' && steps.chain.outputs.chained != 'true'
+        # hop_failed = infra misconfig (caller permission), NOT an attempt on
+        # the issue — don't burn its attempt budget; the claim was released.
+        if: always() && steps.guard.outputs.issue != '' && steps.chain.outputs.chained != 'true' && steps.chain.outputs.hop_failed != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

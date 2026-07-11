@@ -34,10 +34,16 @@ NAME only — actual secrets live in each caller repo / the org.
    Re-sync after any engine kit change the same way — the gate's checksum
    guard will tell you when.
 2. Add three thin caller workflows (copy from any migrated repo — ops, hds,
-   site-engine) pointing at:
-   - `hirobius/ralph/.github/workflows/ralph-run-reusable.yml@main`
-   - `hirobius/ralph/.github/workflows/ralph-gate-reusable.yml@main`
-   - `hirobius/ralph/.github/workflows/ralph-triage-reusable.yml@main`
+   site-engine) pointing at the **`v1` tag — never `@main`** (see Versioning):
+   - `hirobius/ralph/.github/workflows/ralph-run-reusable.yml@v1`
+   - `hirobius/ralph/.github/workflows/ralph-gate-reusable.yml@v1`
+   - `hirobius/ralph/.github/workflows/ralph-triage-reusable.yml@v1`
+   The caller job's `permissions:` block is the engine's permission contract:
+   grant `contents`/`issues`/`pull-requests`/`statuses`/`id-token`: `write`
+   (+ `actions: write` for the merge→next-issue chain hop). The reusables
+   deliberately declare NO job-level permissions — they inherit the caller's
+   grant, and a step whose optional permission is missing degrades with a
+   message naming the fix instead of startup-failing the whole run (ops#144).
 3. The repo's `package.json` must pin `"packageManager": "pnpm@<version>"` —
    the engine installs whatever it names (no hardcoded version).
 4. Ensure secrets `CLAUDE_CODE_OAUTH_TOKEN` (+ optional `DISCORD_WEBHOOK_URL`)
@@ -47,5 +53,23 @@ NAME only — actual secrets live in each caller repo / the org.
 6. Tag issues `ralph-ready` (+ `p0`–`p3` priority, + `ralph-auto` to
    batch-pre-approve merges); approve other PRs with the `ralph-approved`
    label. Full contract: `hirobius/ops/ralph/README.md`.
+
+## Versioning — callers pin tags, upgrades are deliberate
+
+Lesson of ops#144: callers are *vendored files* that skew behind the engine —
+an engine change that tightens what it needs from callers broke every gate
+run org-wide with a blank `startup_failure`. Two rails prevent the class:
+
+- **Callers pin the `v1` tag, never `@main`.** `main` can then move freely
+  without changing what any fleet repo executes. Upgrading a repo = a
+  deliberate PR in that repo (bump the tag in its three callers), never a
+  side effect of an engine push.
+- **`v1` only moves for backward-compatible changes** — same caller files,
+  same permission contract, same inputs/secrets. Re-point it with
+  `git tag -f v1 <sha> && git push -f origin v1`. Anything that requires
+  callers to change (new required permission, input, or secret) is **v2**:
+  new tag, plus a PR per consumer repo updating its callers in the same
+  breath. A permission a caller might lack must degrade gracefully in-run
+  (fail-soft with the named fix), never be requested at the job level.
 
 Changes to the engine land here via PR, like everywhere else.

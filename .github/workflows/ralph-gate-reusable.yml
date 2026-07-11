@@ -38,13 +38,14 @@ jobs:
   ralph-gate:
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    permissions:
-      contents: write
-      issues: write
-      pull-requests: write
-      statuses: write
-      id-token: write
-      actions: write # chain hop: dispatch the next run after an auto-merge
+    # NO job-level permissions block — deliberately (ops#144). A reusable that
+    # requests a permission its caller doesn't grant startup-fails EVERY gate
+    # run in that repo (zero jobs, no error message), and callers are vendored
+    # files that skew behind the engine. Instead the job inherits exactly what
+    # the caller grants, and any step that needs an optional permission
+    # (actions: write for the chain hop) fails soft with a message naming the
+    # caller fix. Callers grant: contents/issues/pull-requests/statuses/
+    # id-token: write (+ actions: write for the chain hop) — see README.
     steps:
       - uses: actions/checkout@v4
         with:
@@ -137,7 +138,7 @@ jobs:
             # directly — workflow_dispatch is exempt from the guard.
             if [ "$(gh pr view "$PR" --json state --jq .state)" = "MERGED" ]; then
               gh workflow run ralph.yml --ref "${{ github.event.repository.default_branch }}" ||
-                echo "chain hop failed (non-fatal — needs actions: write on the caller)"
+                echo "::warning::chain hop skipped — caller lacks 'actions: write'. Add it under the ralph-gate job's permissions in .github/workflows/ralph-gate.yml to auto-continue the loop after merges; until then, re-trigger via workflow_dispatch or by re-adding ralph-ready."
             fi
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
@@ -341,7 +342,7 @@ jobs:
               # completed synchronously.
               if [ "$(gh pr view "$PR" --json state --jq .state)" = "MERGED" ]; then
                 gh workflow run ralph.yml --ref "${{ github.event.repository.default_branch }}" ||
-                  echo "chain hop failed (non-fatal — needs actions: write on the caller)"
+                  echo "::warning::chain hop skipped — caller lacks 'actions: write'. Add it under the ralph-gate job's permissions in .github/workflows/ralph-gate.yml to auto-continue the loop after merges; until then, re-trigger via workflow_dispatch or by re-adding ralph-ready."
               fi
             else
               gh pr comment "$PR" --body "$(printf '🟢 **ralph-gate: PASS — awaiting approval.** Gate green + AI-approved. %s\n\nAdd the `%s` label to merge this PR, or pre-tag issues `%s` (alongside `ralph-ready`) to batch-approve future PRs.' "$s" "$RALPH_APPROVE_LABEL" "$RALPH_AUTO_MERGE_LABEL")"
