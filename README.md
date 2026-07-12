@@ -15,7 +15,16 @@ NAME only — actual secrets live in each caller repo / the org.
 - `.github/workflows/ralph-run-reusable.yml` — the run engine: deterministic
   guard (event filter → wedge check → `ralph/next.sh` selection → atomic
   claim) → one model iteration → state-based reconcile. Push and schedule
-  events chain via a workflow_dispatch hop.
+  events chain via a workflow_dispatch hop. Reconcile outcomes: PR exists →
+  success; branch-but-no-PR → recover the PR; a **deliberate blocked-stop**
+  (the model posted a `ralph-blocked:` comment, or the issue left the ready
+  queue mid-run) → route to `needs-adrian`, **no attempt burned**; anything
+  else → record a failed attempt, park on the cap. The blocked-stop path is
+  what keeps a "needs a human" issue from reddening the run and halting the
+  chain (site-engine#86).
+- `tests/reconcile.test.sh` — bash regression tests for that reconcile
+  decision (run via `.github/workflows/test.yml`); the #86 stall is a locked
+  case there.
 - `.github/workflows/ralph-gate-reusable.yml` — the review gate: **kit-drift
   checksum guard** (vendored `ralph/` vs `kit/`; a PR touching a drifted kit
   file fails, pre-existing drift warns) + per-repo `ralph/gate.sh` +
