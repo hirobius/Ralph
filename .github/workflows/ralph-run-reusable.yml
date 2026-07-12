@@ -232,7 +232,11 @@ jobs:
             - NEVER merge or push to main — merges are human-approved via the
               ralph-gate workflow. No destructive ops (DB migrations, deletes).
             - Append what you did to progress.txt.
-            - If blocked or ambiguous, comment on the issue and STOP.
+            - If blocked, ambiguous, or needs a human decision: do a clean
+              blocked-stop (prompt.md §1) — post a comment whose FIRST line is
+              exactly `ralph-blocked: <reason>`, open NO PR, touch no labels,
+              and STOP. The marker routes it to a human without burning an
+              attempt; omitting it makes a deliberate stop look like a crash.
 
       - name: Reconcile — state decides what actually happened
         # hop_failed = infra misconfig (caller permission), NOT an attempt on
