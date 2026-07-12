@@ -14,8 +14,8 @@ NAME only — actual secrets live in each caller repo / the org.
   repo's `ralph/README.md`) — are exempt and live only in the consumers.
 - `.github/workflows/ralph-run-reusable.yml` — the run engine: deterministic
   guard (event filter → wedge check → `ralph/next.sh` selection → atomic
-  claim) → one model iteration → state-based reconcile. Push events chain via
-  a workflow_dispatch hop.
+  claim) → one model iteration → state-based reconcile. Push and schedule
+  events chain via a workflow_dispatch hop.
 - `.github/workflows/ralph-gate-reusable.yml` — the review gate: **kit-drift
   checksum guard** (vendored `ralph/` vs `kit/`; a PR touching a drifted kit
   file fails, pre-existing drift warns) + per-repo `ralph/gate.sh` +
@@ -53,6 +53,15 @@ NAME only — actual secrets live in each caller repo / the org.
 6. Tag issues `ralph-ready` (+ `p0`–`p3` priority, + `ralph-auto` to
    batch-pre-approve merges); approve other PRs with the `ralph-approved`
    label. Full contract: `hirobius/ops/ralph/README.md`.
+7. **Recommended — idle watchdog:** add a `schedule:` trigger to the repo's
+   run caller (`.github/workflows/ralph.yml`), e.g. `cron: "23 * * * *"`.
+   Without it the loop is event-driven only and halts silently after a failed
+   iteration, or when an `issues: labeled` run is cancelled by the
+   concurrency dedup while another run holds the group. The tick re-enters
+   the guard, so an idle tick is a quiet no-op: empty queue or a healthy
+   in-flight PR → skip; wedged → Discord alert (repeats hourly until
+   cleared); ready work + idle loop → claim + dispatch hop. Stagger the cron
+   minute per repo so fleet ticks don't stampede the shared claim/PR checks.
 
 ## Versioning — callers pin tags, upgrades are deliberate
 
