@@ -15,16 +15,22 @@ NAME only — actual secrets live in each caller repo / the org.
 - `.github/workflows/ralph-run-reusable.yml` — the run engine: deterministic
   guard (event filter → wedge check → `ralph/next.sh` selection → atomic
   claim) → one model iteration → state-based reconcile. Push and schedule
-  events chain via a workflow_dispatch hop. Reconcile outcomes: PR exists →
-  success; branch-but-no-PR → recover the PR; a **deliberate blocked-stop**
-  (the model posted a `ralph-blocked:` comment, or the issue left the ready
-  queue mid-run) → route to `needs-adrian`, **no attempt burned**; anything
-  else → record a failed attempt, park on the cap. The blocked-stop path is
-  what keeps a "needs a human" issue from reddening the run and halting the
-  chain (site-engine#86).
-- `tests/reconcile.test.sh` — bash regression tests for that reconcile
-  decision (run via `.github/workflows/test.yml`); the #86 stall is a locked
-  case there.
+  events chain via a workflow_dispatch hop. Reconcile is **run-scoped and
+  state-based**: an OPEN PR (or one merged during THIS run) → success; a PR
+  merged in a *past* run parks the still-open issue to `needs-adrian` instead
+  of masking a no-op iteration (the hds#126 restart loop); branch-but-no-PR →
+  recover the PR; a **deliberate blocked-stop** (the model posted a
+  `ralph-blocked:` comment, or the issue left the ready queue mid-run) → route
+  to `needs-adrian`, **no attempt burned** (keeps a "needs a human" issue from
+  reddening the run and halting the chain, site-engine#86); a human-closed PR →
+  `needs-adrian` for direction, not a retry; anything else → record a failed
+  attempt, park on the cap. `next.sh` applies the same PR-history guard at
+  selection time, so the looping class never even costs a model iteration.
+- `tests/` — decision-table tests for the kit (`reconcile.test.sh` +
+  `next.test.sh`, `gh`/`git` stubbed, no network; the #86 stall and #126
+  restart loop are both locked cases) run via `.github/workflows/test.yml`
+  with shellcheck. Extend `tests/*.test.sh` whenever reconcile/selection
+  semantics change.
 - `.github/workflows/ralph-gate-reusable.yml` — the review gate: **kit-drift
   checksum guard** (vendored `ralph/` vs `kit/`; a PR touching a drifted kit
   file fails, pre-existing drift warns) + per-repo `ralph/gate.sh` +

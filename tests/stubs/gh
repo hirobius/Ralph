@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+# Test stub for `gh` — serves canned fixtures and records mutations, so the
+# kit's decision logic can be exercised with zero network access.
+#
+#   GH_FIX_DIR        directory of fixture files (see dispatch table below)
+#   GH_MUT_LOG        file every mutating call is appended to (one argv line)
+#   GH_FAIL_PATTERNS  newline-separated extended regexes; an argv line matching
+#                     one exits 1 (injects an API failure for that call)
+#
+# Reads honor `--jq <expr>` by piping the fixture through real jq, mirroring
+# gh's behavior closely enough for the expressions the kit uses. A read whose
+# fixture file is missing fails loudly (exit 1 + stderr) — tests must declare
+# the world they run in.
+set -uo pipefail
+
+argv="$*"
+
+if [ -n "${GH_FAIL_PATTERNS:-}" ]; then
+  while IFS= read -r pat; do
+    [ -z "$pat" ] && continue
+    if grep -qE -- "$pat" <<<"$argv"; then
+      echo "stub-gh: injected failure for: gh $argv" >&2
+      exit 1
+    fi
+  done <<<"$GH_FAIL_PATTERNS"
+fi
+
+jqexpr=""
+args=("$@")
+for ((i = 0; i < ${#args[@]} - 1; i++)); do
+  [ "${args[i]}" = "--jq" ] && jqexpr="${args[i + 1]}"
+done
+
+# the issue number, for per-issue fixtures: first purely-numeric argument, or
+# the /issues/<n>/ segment of an api path
+issue=""
+for a in "$@"; do
+  if [[ "$a" =~ ^[0-9]+$ ]]; then
+    issue="$a"
+    break
+  fi
+done
+if [ -z "$issue" ] && [[ "$argv" =~ issues/([0-9]+)/ ]]; then
+  issue="${BASH_REMATCH[1]}"
+fi
+
+serve() { # <fixture-file>
+  local f="$GH_FIX_DIR/$1"
+  if [ ! -f "$f" ]; then
+    echo "stub-gh: MISSING FIXTURE $1 for: gh $argv" >&2
+    exit 1
+  fi
+  if [ -n "$jqexpr" ]; then jq -r "$jqexpr" <"$f"; else cat "$f"; fi
+}
+
+mutate() {
+  echo "gh $argv" >>"$GH_MUT_LOG"
+  exit 0
+}
+
+case "$1 ${2:-}" in
+"pr list")
+  case "$argv" in
+  *"--state all"*) serve pr_list_all.json ;;
+  *"--state open"*) serve pr_list_open.json ;;
+  *) serve pr_list_open.json ;;
+  esac
+  ;;
+"pr create") mutate ;;
+"issue list") serve issue_list.json ;;
+"issue view")
+  case "$argv" in
+  *"--json comments"*) serve "issue_view_comments_$issue.json" ;;
+  *"--json state,labels"*) serve "issue_view_state_$issue.json" ;;
+  *)
+    echo "stub-gh: unhandled issue view shape: gh $argv" >&2
+    exit 1
+    ;;
+  esac
+  ;;
+"issue edit" | "issue comment" | "label create") mutate ;;
+"api -X") mutate ;; # DELETE claim ref / POST git ref
+"api "*)
+  case "$argv" in
+  *"/issues/$issue/comments"*) serve "api_issue_comments_$issue.json" ;;
+  *"/issues/$issue/events"*) serve "api_issue_events_$issue.json" ;;
+  *)
+    echo "stub-gh: unhandled api path: gh $argv" >&2
+    exit 1
+    ;;
+  esac
+  ;;
+*)
+  echo "stub-gh: unhandled invocation: gh $argv" >&2
+  exit 1
+  ;;
+esac
