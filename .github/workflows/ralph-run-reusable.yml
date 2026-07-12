@@ -16,6 +16,14 @@ name: Ralph run (reusable)
 # state-based reconcile (PR exists = success; branch-no-PR = recover the PR;
 # nothing = attempt recorded, parked on cap). The claude step NEVER picks the
 # task and the reconcile step runs even when claude dies.
+#
+# Idle watchdog: callers may add a `schedule:` trigger (hourly tick — see
+# README). Without it the loop is event-driven only, and two things halt it
+# silently: a failed iteration (nothing re-fires after a red run), and
+# `issues: labeled` runs swallowed by the caller's concurrency dedup while
+# another run holds the group. A schedule tick re-enters this guard — empty
+# queue / healthy in-flight PR → quiet skip; wedged → Discord alert; ready
+# work + idle loop → claim + chain hop. Cost of a no-op tick: one guard step.
 
 on:
   workflow_call:
@@ -135,20 +143,21 @@ jobs:
           echo "Claimed #$issue (run $RUN_ID)."
           echo "issue=$issue" >> "$GITHUB_OUTPUT"
 
-      - name: Chain hop — a push run re-enters via workflow_dispatch
+      - name: Chain hop — a push or schedule run re-enters via workflow_dispatch
         id: chain
-        if: steps.guard.outputs.issue != '' && github.event_name == 'push'
+        if: steps.guard.outputs.issue != '' && (github.event_name == 'push' || github.event_name == 'schedule')
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           # claude-code-action@v1 hard-rejects `push` events ("Unsupported
           # event type: push") — a latent flaw in the original chain that the
-          # working guard exposed on its first claimed push run. So the chain
-          # converts the push into an explicit dispatch of the issue we just
-          # claimed; the dispatched run's claim-steal re-claims it and runs
-          # the model under a supported event. No loop risk: dispatch runs
-          # never re-dispatch (this step is push-only), and the concurrency
-          # group keeps the hop serialized.
+          # working guard exposed on its first claimed push run — and rejects
+          # `schedule` (the idle-watchdog tick, see header) the same way. So
+          # the chain converts either event into an explicit dispatch of the
+          # issue we just claimed; the dispatched run's claim-steal re-claims
+          # it and runs the model under a supported event. No loop risk:
+          # dispatch runs never re-dispatch (this step is push/schedule-only),
+          # and the concurrency group keeps the hop serialized.
           if ! gh workflow run "${{ github.workflow }}" -R "$GITHUB_REPOSITORY" \
             --field issue="${{ steps.guard.outputs.issue }}"; then
             # Degrade legibly, never wedge: release the claim so the issue is
@@ -156,7 +165,7 @@ jobs:
             . ralph/lib.sh
             delete_claim_ref "${{ steps.guard.outputs.issue }}" || true
             echo "hop_failed=true" >> "$GITHUB_OUTPUT"
-            echo "::error::chain hop failed — caller lacks 'actions: write'. Add it under the ralph job's permissions in .github/workflows/ralph.yml (the push→dispatch hop needs it). Claim on #${{ steps.guard.outputs.issue }} released; re-trigger via workflow_dispatch or by re-adding ralph-ready."
+            echo "::error::chain hop failed — caller lacks 'actions: write'. Add it under the ralph job's permissions in .github/workflows/ralph.yml (the push/schedule→dispatch hop needs it). Claim on #${{ steps.guard.outputs.issue }} released; re-trigger via workflow_dispatch or by re-adding ralph-ready."
             exit 1
           fi
           echo "Chained: dispatched '${{ github.workflow }}' for issue #${{ steps.guard.outputs.issue }}."
