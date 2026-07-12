@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# Test stub for `git` — only the read-side subcommands the kit's decision
+# logic touches. Anything else fails loudly so a new git dependency in the
+# kit surfaces as a test failure, not silent weirdness.
+#
+#   GIT_CLAIM_REFS   space-separated issue numbers that have a live claim ref
+#   GH_FIX_DIR/git_ls_heads.txt
+#                    ls-remote --heads output lines ("<sha>\trefs/heads/<b>")
+set -uo pipefail
+
+argv="$*"
+
+case "$1 ${2:-}" in
+"ls-remote --exit-code")
+  # claim_ref_exists: ... refs/heads/ralph/claim-<n>
+  n="${argv##*refs/heads/ralph/claim-}"
+  for c in ${GIT_CLAIM_REFS:-}; do
+    if [ "$c" = "$n" ]; then
+      printf 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\trefs/heads/ralph/claim-%s\n' "$n"
+      exit 0
+    fi
+  done
+  exit 2
+  ;;
+"ls-remote --heads")
+  # reconcile branch recovery: ... origin "ralph/issue-<n>-*"
+  pat="${argv##* }"     # last arg is the glob
+  prefix="${pat%\*}"    # glob is always a trailing-star prefix in the kit
+  f="$GH_FIX_DIR/git_ls_heads.txt"
+  [ -f "$f" ] || exit 0
+  grep -F "refs/heads/$prefix" "$f" || true
+  exit 0
+  ;;
+"rev-parse HEAD")
+  echo "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+  ;;
+"remote get-url")
+  echo "https://github.com/hirobius/test.git"
+  ;;
+"symbolic-ref --short")
+  echo "origin/main"
+  ;;
+"log -1")
+  echo "feat: recovered branch title"
+  ;;
+*)
+  echo "stub-git: unhandled invocation: git $argv" >&2
+  exit 1
+  ;;
+esac

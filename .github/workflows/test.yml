@@ -1,9 +1,10 @@
 name: Engine tests
 
 # The engine kit had no CI on its own PRs — kit/lib.sh changes (including the
-# reconcile logic whose regression caused the site-engine#86 fleet stall)
-# merged ungated. This runs the kit's bash regression tests on every change to
-# kit/ or tests/. Make it a required check in branch protection to gate merges.
+# reconcile logic whose regressions caused the site-engine#86 fleet stall and
+# the hds#126 restart loop) merged ungated. This runs the kit's bash
+# regression tests + shellcheck on every change to kit/ or tests/. Make it a
+# required check in branch protection to gate merges.
 
 on:
   push:
@@ -17,7 +18,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Syntax-check the kit (bash -n)
-        run: for f in kit/*.sh; do bash -n "$f"; done
-      - name: reconcile_issue regression tests
-        run: bash tests/reconcile.test.sh
+      - name: Syntax-check kit + tests (bash -n)
+        run: bash -n kit/*.sh tests/*.sh tests/*.test.sh tests/stubs/gh tests/stubs/git
+      - name: shellcheck
+        # -S warning: the kit predates shellcheck; info/style notes in
+        # untouched files must not block engine PRs.
+        run: shellcheck -x -S warning kit/*.sh tests/*.sh tests/*.test.sh tests/stubs/gh tests/stubs/git
+      - name: Kit decision-table tests (reconcile + selection)
+        run: bash tests/run.sh
