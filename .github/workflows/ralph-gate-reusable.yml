@@ -107,6 +107,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           SHA: ${{ github.event.pull_request.head.sha }}
           PR: ${{ github.event.pull_request.number }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
           set -euo pipefail
           if [[ "${{ github.head_ref }}" != ralph/* ]] || \
@@ -137,6 +140,7 @@ jobs:
             # (checks were already green), dispatch the next iteration
             # directly — workflow_dispatch is exempt from the guard.
             if [ "$(gh pr view "$PR" --json state --jq .state)" = "MERGED" ]; then
+              notify_discord "🟢 **Merged to main** on \`${{ github.repository }}\` — PR #$PR: $PR_TITLE $PR_URL" || true
               gh workflow run ralph.yml --ref "${{ github.event.repository.default_branch }}" ||
                 echo "::warning::chain hop skipped — caller lacks 'actions: write'. Add it under the ralph-gate job's permissions in .github/workflows/ralph-gate.yml to auto-continue the loop after merges; until then, re-trigger via workflow_dispatch or by re-adding ralph-ready."
             fi
@@ -288,6 +292,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
           PR_URL: ${{ github.event.pull_request.html_url }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
           set -euo pipefail
           . ralph/lib.sh 2>/dev/null || {
@@ -341,6 +347,7 @@ jobs:
               # no push event, so dispatch the next iteration when the merge
               # completed synchronously.
               if [ "$(gh pr view "$PR" --json state --jq .state)" = "MERGED" ]; then
+                notify_discord "🟢 **Merged to main** on \`${{ github.repository }}\` — PR #$PR: $PR_TITLE $PR_URL" || true
                 gh workflow run ralph.yml --ref "${{ github.event.repository.default_branch }}" ||
                   echo "::warning::chain hop skipped — caller lacks 'actions: write'. Add it under the ralph-gate job's permissions in .github/workflows/ralph-gate.yml to auto-continue the loop after merges; until then, re-trigger via workflow_dispatch or by re-adding ralph-ready."
               fi
