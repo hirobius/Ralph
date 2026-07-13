@@ -78,6 +78,31 @@ NAME only — actual secrets live in each caller repo / the org.
    cleared); ready work + idle loop → claim + dispatch hop. Stagger the cron
    minute per repo so fleet ticks don't stampede the shared claim/PR checks.
 
+## Running on your own hardware (zero Actions minutes)
+
+Two independent levers when metered GitHub-hosted minutes are the constraint:
+
+1. **Local loop (no Actions at all for the run job).** The kit was built for
+   this: from any consumer repo, `bash ralph/loop.sh <N>` drives up to N full
+   iterations on your own machine — same selector, claims, reconcile, and
+   audit trail as CI (GitHub is the state store either way, so local and CI
+   runners coexist safely; claims are atomic). Prereqs on the machine:
+   `gh` authenticated with repo scope, the `claude` CLI logged in (Max
+   subscription), `jq`, and the repo's own toolchain for `ralph/gate.sh`.
+   PR merges still flow through the `ralph-gate` required check — see lever 2
+   if that should stop costing minutes too.
+2. **Self-hosted runner (Actions orchestration stays, minutes become free).**
+   All three reusables read the caller repo's `RALPH_RUNNER` Actions variable
+   for their `runs-on` label (`vars` in a reusable resolves from the CALLING
+   repo, so this is per-repo or org-wide, no file edits). Register a runner
+   (org-level covers the whole fleet:
+   `https://github.com/organizations/hirobius/settings/actions/runners/new`),
+   then set `RALPH_RUNNER=self-hosted` as an org or repo Actions variable.
+   Unset = GitHub-hosted, behavior unchanged. **Safety rail:** only attach
+   self-hosted runners to the PRIVATE consumer repos (or a runner group
+   excluding public repos) — never to this public repo's own workflows, since
+   fork PRs could then execute code on your hardware.
+
 ## Versioning — callers pin tags, upgrades are deliberate
 
 Lesson of ops#144: callers are *vendored files* that skew behind the engine —

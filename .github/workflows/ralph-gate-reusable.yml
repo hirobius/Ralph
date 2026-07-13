@@ -36,7 +36,10 @@ on:
 
 jobs:
   ralph-gate:
-    runs-on: ubuntu-latest
+    # Caller-repo (or org) variable RALPH_RUNNER overrides the runner label —
+    # set it to `self-hosted` to run on your own hardware (zero Actions
+    # minutes on private repos). Unset = GitHub-hosted, unchanged behavior.
+    runs-on: ${{ vars.RALPH_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 60
     # NO job-level permissions block — deliberately (ops#144). A reusable that
     # requests a permission its caller doesn't grant startup-fails EVERY gate
