@@ -25,6 +25,7 @@ fi
 : "${RALPH_ITER_TIMEOUT:=3600}"                       # seconds one claude iteration may run
 : "${RALPH_MAX_ATTEMPTS:=2}"                          # failed attempts before parking
 : "${RALPH_MAX_LIFETIME_ATTEMPTS:=5}"                 # failed attempts EVER, across re-queues
+: "${RALPH_SUBSTANTIVE_COMMENT_CHARS:=120}"           # length that marks a reasoned stop
 : "${RALPH_PR_WAIT:=1800}"                            # seconds loop.sh waits on an open PR
 : "${RALPH_CLAIM_TTL:=$((RALPH_ITER_TIMEOUT * 2))}"   # claim older than this w/o a PR = stale
 : "${RALPH_READY_LABEL:=ralph-ready}"
@@ -289,6 +290,40 @@ model_signalled_blocked() {
   [ "${count:-0}" -gt 0 ]
 }
 
+# Did the MODEL leave a substantive comment of its own this cycle?
+#
+# This is the fallback behind model_signalled_blocked. ops#303: "A load-bearing
+# protocol rides entirely on the model remembering a string prefix, with no
+# fallback." It failed exactly that way on ops#39 and ops#44 — the agent
+# explained clearly why it was stopping, just not starting with `ralph-blocked`,
+# and was charged an attempt for doing what CLAUDE.md asks.
+#
+# Three things keep the inference honest:
+#   - gated to THIS cycle, like the sentinel, so a re-queue resets it;
+#   - harness-authored comments are excluded — `ralph-claim`,
+#     `ralph-attempt-failed` and the park/gate notices are the loop talking to
+#     itself. Counting them would make EVERY failure look deliberate and the
+#     attempt budget would stop working altogether;
+#   - a length floor, so a one-liner like "working on it" is not a reasoned stop.
+#
+# On any API failure this returns false — a conservative fall-through to the
+# attempt path, never a silent swallow of a real crash.
+model_left_substantive_comment() {
+  local n=$1 since count
+  since=$(latest_ready_label_at "$n")
+  [ "$since" = "unknown" ] && return 1
+  count=$(gh issue view "$n" --json comments 2>/dev/null |
+    jq -r --arg since "${since:-1970-01-01T00:00:00Z}" \
+      --argjson min "${RALPH_SUBSTANTIVE_COMMENT_CHARS}" \
+      '[.comments[]
+        | select(.createdAt > $since)
+        | select((.body | ascii_downcase | test("^ralph-")) | not)
+        | select((.body | test("Ralph (parked|watchdog)|ralph-gate:")) | not)
+        | select((.body | length) >= $min)] | length' \
+      2>/dev/null || echo 0)
+  [ "${count:-0}" -gt 0 ]
+}
+
 record_failed_attempt() { # <n> <run_id> <reason>
   [ "$RALPH_DRY_RUN" = "1" ] && return 0
   gh issue comment "$1" --body "ralph-attempt-failed $2 — $3" >/dev/null 2>&1 || true
@@ -453,6 +488,20 @@ Opened by ralph reconciliation (run \`$run_id\`): the iteration pushed this bran
     release_claim "$n"
     park_issue "$n" "prior Ralph PR(s) merged but the issue is still open and this iteration produced nothing new — the remainder looks not agent-actionable. Close the issue or split what's left into a new issue, then re-add \`$RALPH_READY_LABEL\`." needs-adrian
     echo "parked:prior merged PR(s) but issue still open — remainder not agent-actionable"
+    return 0
+  fi
+  # 6.5) No sentinel, but the model left a reasoned comment of its own this
+  #      cycle → infer a deliberate stop. This is the ops#39 / ops#44 class:
+  #      the agent explained why it stopped and was charged an attempt anyway,
+  #      because it did not prefix the comment with `ralph-blocked`. Parks to
+  #      needs-adrian WITHOUT recording an attempt — and parking (not retrying)
+  #      is what makes a false positive safe, since no attempt is recorded here
+  #      and so neither cap would bound a retry loop.
+  if model_left_substantive_comment "$n"; then
+    park_issue "$n" "the model stopped without a PR and left a reasoned explanation instead of a \`ralph-blocked\` sentinel — treating it as a deliberate stop, not a crash. $why" needs-adrian \
+      "read the model's comment above first — if it is genuinely blocked, answer it; if it stopped in error, re-add \`$RALPH_READY_LABEL\`"
+    release_claim "$n"
+    echo "parked:#$n — inferred deliberate stop from the model's own comment, no attempt recorded"
     return 0
   fi
   # 7) Genuine no-ship → record the attempt, release the claim, park on cap.
