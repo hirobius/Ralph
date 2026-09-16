@@ -93,11 +93,14 @@ for n in $ordered; do
     continue
   fi
 
-  fails=$(count_failed_attempts "$n" "${boundary:-1970-01-01T00:00:00Z}")
-  if [ "$fails" = "unknown" ]; then
+  attempts=$(count_attempts "$n" "${boundary:-1970-01-01T00:00:00Z}")
+  if [ "$attempts" = "unknown" ]; then
     echo "ralph: cannot verify #$n's attempt budget (API failure) — skipping (fail-closed)" >&2
     continue
   fi
+  fails=${attempts%% *}
+  lifetime_fails=${attempts##* }
+
   if [ "${fails:-0}" -ge "$RALPH_MAX_ATTEMPTS" ]; then
     echo "ralph: #$n already failed $fails attempt(s) — parking" >&2
     park_issue "$n" "hit the attempt cap ($fails/$RALPH_MAX_ATTEMPTS failed attempts — see the ralph-attempt-failed comments above)." ralph-parked >&2
@@ -105,16 +108,14 @@ for n in $ordered; do
   fi
 
   # Lifetime budget: bounds thrash that re-queuing would otherwise reset. The
-  # per-cycle check above stays the primary guard; this one only catches an
-  # issue that has been re-queued into failure repeatedly. Fails closed.
-  lifetime=$(count_lifetime_attempts "$n")
-  if [ "$lifetime" = "unknown" ]; then
-    echo "ralph: cannot verify #$n's lifetime attempts (API failure) — skipping (fail-closed)" >&2
-    continue
-  fi
-  if [ "${lifetime:-0}" -ge "$RALPH_MAX_LIFETIME_ATTEMPTS" ]; then
-    echo "ralph: #$n has failed $lifetime time(s) across all queueings — parking" >&2
-    park_issue "$n" "hit the LIFETIME attempt cap ($lifetime/$RALPH_MAX_LIFETIME_ATTEMPTS failed attempts across every queueing, not just this one). Re-adding \`$RALPH_READY_LABEL\` resets the per-cycle budget but deliberately NOT this one — repeated failure across re-queues means the issue or its premise needs a human, not another iteration." ralph-parked >&2
+  # per-cycle check above stays the primary guard; this only catches an issue
+  # re-queued into failure repeatedly.
+  if [ "${lifetime_fails:-0}" -ge "$RALPH_MAX_LIFETIME_ATTEMPTS" ]; then
+    echo "ralph: #$n has failed $lifetime_fails time(s) across all queueings — parking" >&2
+    park_issue "$n" \
+      "hit the LIFETIME attempt cap ($lifetime_fails/$RALPH_MAX_LIFETIME_ATTEMPTS failed attempts across every queueing, not just this one)." \
+      ralph-parked \
+      "re-adding \`$RALPH_READY_LABEL\` will NOT clear this — a lifetime count cannot go down. Close or split the issue, or raise \`RALPH_MAX_LIFETIME_ATTEMPTS\` in \`ralph/config.env\` if the failures were loop infrastructure rather than the issue" >&2
     continue
   fi
 

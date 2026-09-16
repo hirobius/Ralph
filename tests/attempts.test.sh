@@ -24,6 +24,8 @@ cd "$(dirname "$0")" || exit 1
 . ./helpers.sh
 
 run_next() { # captures stdout; exit code lands in NEXT_CODE
+  # Env set as a prefix (RALPH_MAX_LIFETIME_ATTEMPTS=2 run_next) reaches next.sh
+  # because the subshell inherits it — that is how a case tightens a cap.
   NEXT_CODE=0
   (cd "$CASE" && bash ralph/next.sh 2>>stderr.log) || NEXT_CODE=$?
 }
@@ -86,6 +88,28 @@ fixture issue_view_comments_200.json <<'JSON'
 JSON
 run_next
 assert_eq 0 "$NEXT_CODE" "a deliberate re-queue after 2 failures still runs"
+
+# ── 2b. PROVES the count is actually pre-boundary, not just permissive ──────
+# Case 2 alone is vacuous: an implementation that always returned 0 would pass
+# it, because 0 is also under the cap. Same fixture, cap tightened to 2 — now
+# only an implementation that genuinely counts the two PRE-boundary failures
+# can park. Verified by mutation: stubbing the lifetime count to 0 fails this
+# case and leaves case 2 green.
+new_case attempts_counts_pre_boundary_failures
+issue_200_ready
+fixture api_issue_events_200.json <<'JSON'
+[{"event": "labeled", "label": {"name": "ralph-ready"},
+  "created_at": "2026-09-16T07:03:00Z"}]
+JSON
+fixture issue_view_comments_200.json <<'JSON'
+{"comments": [
+  {"body": "ralph-attempt-failed ci-1", "createdAt": "2026-07-11T00:59:48Z"},
+  {"body": "ralph-attempt-failed ci-2", "createdAt": "2026-07-11T01:31:57Z"}
+]}
+JSON
+RALPH_MAX_LIFETIME_ATTEMPTS=2 run_next
+assert_eq 10 "$NEXT_CODE" "pre-boundary failures are counted, not read as 0"
+assert_mutation "--add-label ralph-parked" "parks on a pre-boundary lifetime count"
 
 # ── 3. A clean issue is unaffected ──────────────────────────────────────────
 new_case attempts_clean_issue_selectable

@@ -24,7 +24,7 @@ if [ -f "$RALPH_DIR/config.env" ]; then
 fi
 : "${RALPH_ITER_TIMEOUT:=3600}"                       # seconds one claude iteration may run
 : "${RALPH_MAX_ATTEMPTS:=2}"                          # failed attempts before parking
-: "${RALPH_MAX_LIFETIME_ATTEMPTS:=5}"                # failed attempts EVER, across re-queues
+: "${RALPH_MAX_LIFETIME_ATTEMPTS:=5}"                 # failed attempts EVER, across re-queues
 : "${RALPH_PR_WAIT:=1800}"                            # seconds loop.sh waits on an open PR
 : "${RALPH_CLAIM_TTL:=$((RALPH_ITER_TIMEOUT * 2))}"   # claim older than this w/o a PR = stale
 : "${RALPH_READY_LABEL:=ralph-ready}"
@@ -237,7 +237,7 @@ latest_ready_label_at() {
 # `unknown` when the boundary or the comment fetch is unavailable, so a
 # transient API flake can never re-select a should-be-parked issue (the old
 # `|| echo 0` fail-open did exactly that); callers must skip/fail, never park.
-count_failed_attempts() {
+count_attempts() { # <n> [since] — echoes "<this-cycle> <lifetime>", or "unknown"
   local n=$1 since=${2:-} comments
   [ -z "$since" ] && since=$(latest_ready_label_at "$n")
   [ "$since" = "unknown" ] && {
@@ -248,38 +248,27 @@ count_failed_attempts() {
     echo unknown
     return 0
   }
+  # ONE fetch, both numbers. next.sh's candidate walk is deliberately O(1) API
+  # calls per candidate ("fetching once keeps the walk O(1)"); asking the same
+  # endpoint twice for two views of the same list would break that for no gain,
+  # and would also make the second call's failure branch unreachable — the first
+  # would already have returned `unknown`.
   jq -r --arg since "${since:-1970-01-01T00:00:00Z}" \
-    '[.comments[] | select((.body | startswith("ralph-attempt-failed")) and (.createdAt > $since))] | length' \
+    '[.comments[] | select(.body | startswith("ralph-attempt-failed"))] as $all
+     | "\($all | map(select(.createdAt > $since)) | length) \($all | length)"' \
     <<<"$comments" 2>/dev/null || echo unknown
 }
 
-# Every `ralph-attempt-failed` comment on the issue, with NO boundary.
-#
-# WHY A SECOND COUNTER. count_failed_attempts is scoped to the latest
-# `ralph-ready` labeling, and that is correct for its purpose: re-queuing is how
-# a human says "I looked, try again", and it must hand back a fresh per-cycle
-# budget. But it also means RALPH_MAX_ATTEMPTS can never bound TOTAL work — an
-# issue can fail, park, be re-queued, and fail again without limit, reading
-# clean to the selector every cycle. ops#156 did exactly that: 12+ re-claims
-# over ~12 hours on already-shipped work.
-#
-# The two caps answer different questions and must not be collapsed:
-#   count_failed_attempts     "has THIS queueing spent its budget?"   (low cap)
-#   count_lifetime_attempts   "is this issue thrashing forever?"      (high cap)
-#
-# The lifetime cap is deliberately the HIGHER of the two. A no-push iteration is
-# frequently loop infrastructure — a permission wall, a bot-actor push
-# rejection — or a deliberate ask-don't-guess stop, not a bad issue (ops#303).
-# Setting it low enough to block a normal re-queue would punish issues for the
-# loop's own defects; ops#44 is the worked example.
-count_lifetime_attempts() {
-  local n=$1 comments
-  comments=$(gh issue view "$n" --json comments 2>/dev/null) || {
+# Back-compat wrapper: the per-cycle count alone. reconcile_issue still wants
+# just this one, and it is the older of the two contracts.
+count_failed_attempts() {
+  local both
+  both=$(count_attempts "$1" "${2:-}")
+  [ "$both" = "unknown" ] && {
     echo unknown
     return 0
   }
-  jq -r '[.comments[] | select(.body | startswith("ralph-attempt-failed"))] | length' \
-    <<<"$comments" 2>/dev/null || echo unknown
+  echo "${both%% *}"
 }
 
 # Did the model post a `ralph-blocked` sentinel THIS cycle? That comment is the
@@ -310,6 +299,10 @@ record_failed_attempt() { # <n> <run_id> <reason>
 # never a false "done". Reversible: re-add the ready label to retry.
 park_issue() {
   local n=$1 reason=$2 label=$3
+  # A park whose retry line is false is worse than no retry line: it sends a
+  # human round a loop that cannot succeed. Callers whose park is NOT cleared by
+  # re-queuing pass their own hint.
+  local retry=${4:-"fix the cause, then re-add \`$RALPH_READY_LABEL\`"}
   if [ "$RALPH_DRY_RUN" = "1" ]; then
     echo "ralph[dry-run]: would park #$n ($label): $reason" >&2
     return 0
@@ -321,7 +314,7 @@ park_issue() {
   # selected-issue capture in run.sh / the CI guard (bit us on the first run).
   gh_retry issue edit "$n" --remove-label "$RALPH_READY_LABEL" --add-label "$label" >/dev/null || true
   gh_retry issue comment "$n" --body "🅿️ **Ralph parked this issue** — $reason
-(To retry: fix the cause, then re-add \`$RALPH_READY_LABEL\`.)" >/dev/null || true
+(To retry: $retry.)" >/dev/null || true
 }
 
 # ---------------------------------------------------------------- reconcile
