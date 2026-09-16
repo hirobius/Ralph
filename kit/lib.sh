@@ -324,6 +324,60 @@ model_left_substantive_comment() {
   [ "${count:-0}" -gt 0 ]
 }
 
+# After a Ralph PR merges, confirm its linked issue ACTUALLY closed — and close
+# it if GitHub's linkage silently failed. ops#305.
+#
+# WHY THIS IS THE PRIMARY DEFENCE, not a backstop. ops#305 framed the cause as a
+# breakable reference: `Closes **#44**`, or the middot list
+# `Closes #186 · #187 · #188 · #191 · #196` that lost three issues in PR #311.
+# Both are real. But on 2026-09-16 PR #360 carried a clean, bare `Closes #297`
+# on its own line, based on the default branch, merged — and #297 stayed open.
+# Correct syntax is not sufficient, so a pre-merge body check cannot be the
+# primary mechanism. Only verifying the transition afterwards catches a failure
+# whose syntax was already right.
+#
+# THE SAFETY GUARD. A merged PR does NOT imply a finished issue —
+# reconcile_issue's step 6 exists precisely because merged work often leaves a
+# remainder. So this closes only when the PR body carries a closing keyword
+# naming THIS issue, and only on the keyword's own line, so a passing mention
+# elsewhere ("see #126 for the rest") is never mistaken for intent. It repairs a
+# linkage the author expressed; it never invents one.
+#
+# Fails safe at every step: an unreadable PR, an unparseable branch, a
+# non-MERGED state or an unknown issue state all return without closing.
+verify_issue_closed() { # <pr>
+  local pr=$1 json head pstate body n istate
+  json=$(gh pr view "$pr" --json headRefName,state,body 2>/dev/null) || return 0
+  [ -z "$json" ] && return 0
+  pstate=$(jq -r '.state // ""' <<<"$json" 2>/dev/null) || return 0
+  [ "$pstate" = "MERGED" ] || return 0
+  head=$(jq -r '.headRefName // ""' <<<"$json" 2>/dev/null)
+  n=$(sed -n 's|^ralph/issue-\([0-9]\{1,\}\)-.*|\1|p' <<<"$head")
+  [ -z "$n" ] && return 0
+  body=$(jq -r '.body // ""' <<<"$json" 2>/dev/null)
+
+  # A closing keyword and this issue's number on the SAME line. Emphasis markers
+  # sit outside the `#<n>` token (`**#126**` still contains `#126`), and a
+  # middot list keeps every number on the keyword's line — so one line-scoped
+  # match covers all three forms GitHub mis-parses.
+  grep -iE '(clos(e|es|ed)|fix(es|ed)?|resolv(e|es|ed))[[:space:]:]' <<<"$body" |
+    grep -qE "#${n}([^0-9]|\$)" || return 0
+
+  istate=$(gh issue view "$n" --json state --jq .state 2>/dev/null) || return 0
+  [ -z "$istate" ] && return 0
+  [ "$istate" = "CLOSED" ] && return 0
+
+  [ "$RALPH_DRY_RUN" = "1" ] && {
+    echo "ralph[dry-run]: would close #$n (PR #$pr merged, linkage did not fire)" >&2
+    return 0
+  }
+  gh issue close "$n" --reason completed --comment "Closed by the Ralph loop's post-merge check: PR #$pr merged carrying a closing keyword for this issue, but GitHub's linkage never fired.
+
+This is ops#305. It is not always malformed syntax — PR #360 carried a clean, bare \`Closes #297\` and still failed to close it — which is why the transition is verified after the merge rather than only checked before it." >/dev/null 2>&1 ||
+    echo "ralph: could not close #$n after PR #$pr merged — do it by hand" >&2
+  echo "ralph: closed #$n — PR #$pr merged but GitHub's linkage did not fire" >&2
+}
+
 record_failed_attempt() { # <n> <run_id> <reason>
   [ "$RALPH_DRY_RUN" = "1" ] && return 0
   gh issue comment "$1" --body "ralph-attempt-failed $2 — $3" >/dev/null 2>&1 || true

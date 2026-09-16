@@ -27,7 +27,7 @@ NAME only — actual secrets live in each caller repo / the org.
   attempt, park on the cap. `next.sh` applies the same PR-history guard at
   selection time, so the looping class never even costs a model iteration.
 - `tests/` — decision-table tests for the kit (`reconcile.test.sh` +
-  `next.test.sh` + `attempts.test.sh` + `blocked-inference.test.sh`, `gh`/`git` stubbed, no network; the #86 stall and #126
+  `next.test.sh` + `attempts.test.sh` + `blocked-inference.test.sh` + `closure-verify.test.sh`, `gh`/`git` stubbed, no network; the #86 stall and #126
   restart loop are both locked cases) run via `.github/workflows/test.yml`
   with shellcheck. Extend `tests/*.test.sh` whenever reconcile/selection
   semantics change.

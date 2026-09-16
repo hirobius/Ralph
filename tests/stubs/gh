@@ -67,18 +67,19 @@ case "$1 ${2:-}" in
   esac
   ;;
 "pr create") mutate ;;
+"pr view") serve "pr_view_$issue.json" ;;
 "issue list") serve issue_list.json ;;
 "issue view")
   case "$argv" in
   *"--json comments"*) serve "issue_view_comments_$issue.json" ;;
-  *"--json state,labels"*) serve "issue_view_state_$issue.json" ;;
+  *"--json state,labels"* | *"--json state"*) serve "issue_view_state_$issue.json" ;;
   *)
     echo "stub-gh: unhandled issue view shape: gh $argv" >&2
     exit 1
     ;;
   esac
   ;;
-"issue edit" | "issue comment" | "label create") mutate ;;
+"issue edit" | "issue comment" | "issue close" | "label create") mutate ;;
 "api -X") mutate ;; # DELETE claim ref / POST git ref
 "api "*)
   case "$argv" in
