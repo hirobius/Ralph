@@ -24,6 +24,7 @@ if [ -f "$RALPH_DIR/config.env" ]; then
 fi
 : "${RALPH_ITER_TIMEOUT:=3600}"                       # seconds one claude iteration may run
 : "${RALPH_MAX_ATTEMPTS:=2}"                          # failed attempts before parking
+: "${RALPH_MAX_LIFETIME_ATTEMPTS:=5}"                # failed attempts EVER, across re-queues
 : "${RALPH_PR_WAIT:=1800}"                            # seconds loop.sh waits on an open PR
 : "${RALPH_CLAIM_TTL:=$((RALPH_ITER_TIMEOUT * 2))}"   # claim older than this w/o a PR = stale
 : "${RALPH_READY_LABEL:=ralph-ready}"
@@ -249,6 +250,35 @@ count_failed_attempts() {
   }
   jq -r --arg since "${since:-1970-01-01T00:00:00Z}" \
     '[.comments[] | select((.body | startswith("ralph-attempt-failed")) and (.createdAt > $since))] | length' \
+    <<<"$comments" 2>/dev/null || echo unknown
+}
+
+# Every `ralph-attempt-failed` comment on the issue, with NO boundary.
+#
+# WHY A SECOND COUNTER. count_failed_attempts is scoped to the latest
+# `ralph-ready` labeling, and that is correct for its purpose: re-queuing is how
+# a human says "I looked, try again", and it must hand back a fresh per-cycle
+# budget. But it also means RALPH_MAX_ATTEMPTS can never bound TOTAL work — an
+# issue can fail, park, be re-queued, and fail again without limit, reading
+# clean to the selector every cycle. ops#156 did exactly that: 12+ re-claims
+# over ~12 hours on already-shipped work.
+#
+# The two caps answer different questions and must not be collapsed:
+#   count_failed_attempts     "has THIS queueing spent its budget?"   (low cap)
+#   count_lifetime_attempts   "is this issue thrashing forever?"      (high cap)
+#
+# The lifetime cap is deliberately the HIGHER of the two. A no-push iteration is
+# frequently loop infrastructure — a permission wall, a bot-actor push
+# rejection — or a deliberate ask-don't-guess stop, not a bad issue (ops#303).
+# Setting it low enough to block a normal re-queue would punish issues for the
+# loop's own defects; ops#44 is the worked example.
+count_lifetime_attempts() {
+  local n=$1 comments
+  comments=$(gh issue view "$n" --json comments 2>/dev/null) || {
+    echo unknown
+    return 0
+  }
+  jq -r '[.comments[] | select(.body | startswith("ralph-attempt-failed"))] | length' \
     <<<"$comments" 2>/dev/null || echo unknown
 }
 

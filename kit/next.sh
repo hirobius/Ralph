@@ -12,6 +12,8 @@
 #     (last cycle already ended in a merge or a human rejection, yet the
 #     issue is still open+queued)                     → parked to needs-adrian
 #   - failed attempts ≥ RALPH_MAX_ATTEMPTS            → parked to ralph-parked
+#   - lifetime failures ≥ RALPH_MAX_LIFETIME_ATTEMPTS → parked (re-queuing
+#     resets the per-cycle budget on purpose; it does NOT reset this one)
 # Issues labeled blocked / needs-adrian / ralph-parked, or holding a fresh
 # claim (refs/heads/ralph/claim-<n>), are skipped — as is any candidate whose
 # history/budget cannot be verified (API failure fails closed: skip, no park).
@@ -99,6 +101,20 @@ for n in $ordered; do
   if [ "${fails:-0}" -ge "$RALPH_MAX_ATTEMPTS" ]; then
     echo "ralph: #$n already failed $fails attempt(s) — parking" >&2
     park_issue "$n" "hit the attempt cap ($fails/$RALPH_MAX_ATTEMPTS failed attempts — see the ralph-attempt-failed comments above)." ralph-parked >&2
+    continue
+  fi
+
+  # Lifetime budget: bounds thrash that re-queuing would otherwise reset. The
+  # per-cycle check above stays the primary guard; this one only catches an
+  # issue that has been re-queued into failure repeatedly. Fails closed.
+  lifetime=$(count_lifetime_attempts "$n")
+  if [ "$lifetime" = "unknown" ]; then
+    echo "ralph: cannot verify #$n's lifetime attempts (API failure) — skipping (fail-closed)" >&2
+    continue
+  fi
+  if [ "${lifetime:-0}" -ge "$RALPH_MAX_LIFETIME_ATTEMPTS" ]; then
+    echo "ralph: #$n has failed $lifetime time(s) across all queueings — parking" >&2
+    park_issue "$n" "hit the LIFETIME attempt cap ($lifetime/$RALPH_MAX_LIFETIME_ATTEMPTS failed attempts across every queueing, not just this one). Re-adding \`$RALPH_READY_LABEL\` resets the per-cycle budget but deliberately NOT this one — repeated failure across re-queues means the issue or its premise needs a human, not another iteration." ralph-parked >&2
     continue
   fi
 
