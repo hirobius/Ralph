@@ -85,6 +85,16 @@ case "$1 ${2:-}" in
   case "$argv" in
   *"/issues/$issue/comments"*) serve "api_issue_comments_$issue.json" ;;
   *"/issues/$issue/events"*) serve "api_issue_events_$issue.json" ;;
+  *"/commits/"*)
+    # newest_branch dating a candidate orphan (ralph#18). Fixture per sha, so a
+    # case can give two branches different commit dates. A missing fixture is a
+    # real condition here -- it exercises the API-failure fallback -- so this
+    # exits non-zero quietly rather than failing the stub.
+    sha="${argv#*/commits/}"
+    sha="${sha%% *}"
+    [ -f "$GH_FIX_DIR/api_commit_$sha.json" ] || exit 1
+    serve "api_commit_$sha.json"
+    ;;
   *)
     echo "stub-gh: unhandled api path: gh $argv" >&2
     exit 1

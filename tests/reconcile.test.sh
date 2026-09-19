@@ -106,6 +106,50 @@ out=$(run_reconcile)
 assert_eq "pr:recovered" "$out" "orphan branch recovered into a PR"
 assert_mutation "pr create" "PR was opened by reconciliation"
 
+# ── 5b. Two orphan branches for one issue → recover the NEWEST commit, and say
+#       which branch was passed over (ralph#18). `older` sorts first in
+#       ls-remote's alphabetical order, so head -n1 would have picked it.
+new_case branch_recovery_picks_newest
+std_claim_comment
+fixture pr_list_all.json <<'JSON'
+[]
+JSON
+fixture api_commit_aaa1111.json <<'JSON'
+{ "commit": { "committer": { "date": "2026-07-01T10:00:00Z" } } }
+JSON
+fixture api_commit_bbb2222.json <<'JSON'
+{ "commit": { "committer": { "date": "2026-07-12T18:30:00Z" } } }
+JSON
+{
+  printf 'aaa1111\trefs/heads/ralph/issue-126-older\n'
+  printf 'bbb2222\trefs/heads/ralph/issue-126-newer\n'
+} >"$GH_FIX_DIR/git_ls_heads.txt"
+out=$(run_reconcile)
+assert_eq "pr:recovered" "$out" "recovered despite two orphan branches"
+# Assert on `--head <branch>`, not the bare branch name: the body deliberately
+# names the passed-over branch too, so a bare-name match passes even when the
+# WRONG branch was opened. (It did exactly that on the first draft of this test.)
+assert_mutation "--head ralph/issue-126-newer" "PR opened for the newest-commit branch"
+assert_no_mutation "--head ralph/issue-126-older" "the older branch was not the one opened"
+assert_mutation "passed over" "recovery PR body names the branch it skipped"
+
+# ── 5c. Two orphans, but the commits API cannot date them → fall back to
+#       ls-remote order rather than failing the reconcile. Recovery must never
+#       be blocked by an API hiccup. No api_commit_* fixtures are written here,
+#       so the stub exits non-zero exactly as a dead API would.
+new_case branch_recovery_api_dead_falls_back
+std_claim_comment
+fixture pr_list_all.json <<'JSON'
+[]
+JSON
+{
+  printf 'aaa1111\trefs/heads/ralph/issue-126-older\n'
+  printf 'bbb2222\trefs/heads/ralph/issue-126-newer\n'
+} >"$GH_FIX_DIR/git_ls_heads.txt"
+out=$(run_reconcile)
+assert_eq "pr:recovered" "$out" "still recovers when candidates cannot be dated"
+assert_mutation "ralph/issue-126-older" "fell back to ls-remote order"
+
 # ── 6. Deliberate stop — issue left the ready queue mid-run (needs-adrian
 #      label present) → parked green, no attempt ─────────────────────────────
 new_case deliberate_stop_left_queue
