@@ -51,11 +51,26 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Fetch canonical kit (hirobius/ralph)
+      - name: Fetch canonical kit (hirobius/ralph, at the engine revision running)
         if: github.event.action != 'labeled'
         uses: actions/checkout@v4
         with:
           repository: hirobius/ralph
+          # Pin to the revision of THIS reusable workflow, not the default branch.
+          #
+          # Callers pin `@v1`, so a vendored kit matching kit/lib.sh@v1 is
+          # correct by definition — it is the code the caller actually runs.
+          # Without this ref the step checked out `main`, so the moment main
+          # moved ahead of v1 every caller was told it had drifted while being
+          # perfectly in sync with the engine executing its gate. That happened
+          # on 2026-09-19: ralph#23 landed newest_branch() on main and all three
+          # callers (ops, hds, site-engine) began warning at once, each holding
+          # a byte-exact copy of v1.
+          #
+          # github.job_workflow_sha is the commit of the reusable workflow file
+          # being run, so this compares the vendored kit against the engine
+          # revision in play — which is the only comparison that means anything.
+          ref: ${{ github.job_workflow_sha }}
           path: .engine-kit
 
       - name: Kit drift check — vendored ralph/ vs canonical kit/
@@ -83,7 +98,9 @@ jobs:
             echo "vendored kit is in sync with hirobius/ralph kit/"
             exit 0
           fi
-          msg="Vendored ralph/ kit drifted from hirobius/ralph kit/:$drifted — re-sync those files from https://github.com/hirobius/ralph/tree/main/kit (gate.sh / config.env / README.md are per-repo and exempt)."
+          # Point at the engine revision actually running, not main: re-syncing
+          # from main would desynchronise the caller from the engine it calls.
+          msg="Vendored ralph/ kit drifted from the engine revision running this gate:$drifted — re-sync those files from https://github.com/hirobius/ralph/tree/${{ github.job_workflow_sha }}/kit (gate.sh / config.env / README.md are per-repo and exempt)."
           # Fail only when THIS PR touches a drifted kit file; otherwise warn —
           # pre-existing drift on main must not block unrelated work.
           touched=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD" -- ralph/ | sed 's|^ralph/||')
