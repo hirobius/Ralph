@@ -87,11 +87,13 @@ new_case command_fails
 manifest_cmd_fails
 run $'src/App.tsx'
 assert_eq 0 "$RUN_CODE" "a failing manifest command fails CLOSED — the diff is reported supervised"
+assert_eq "" "$RUN_OUT" "stdout stays a path list — the diagnostic goes to stderr"
 
 # ── 6. command prints nothing → FAILS CLOSED ─────────────────────────────
 new_case command_prints_nothing
 manifest_cmd_empty
 run $'src/App.tsx'
 assert_eq 0 "$RUN_CODE" "an empty manifest fails CLOSED — the diff is reported supervised"
+assert_eq "" "$RUN_OUT" "stdout stays a path list — the diagnostic goes to stderr"
 
 report

@@ -108,7 +108,7 @@ ralph_diff_is_supervised() {
   [ -z "${RALPH_SUPERVISED_CMD:-}" ] && return 1
   patterns="$(eval "$RALPH_SUPERVISED_CMD" 2>/dev/null)" || rc=$?
   if [ "$rc" -ne 0 ] || [ -z "$patterns" ]; then
-    echo "(RALPH_SUPERVISED_CMD failed or printed nothing — treating the diff as supervised)"
+    echo "ralph_diff_is_supervised: RALPH_SUPERVISED_CMD failed or printed nothing — treating the diff as supervised" >&2
     return 0
   fi
   [ -z "$paths" ] && return 1
