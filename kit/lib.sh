@@ -33,6 +33,7 @@ fi
 : "${RALPH_APPROVE_LABEL:=ralph-approved}"
 : "${RALPH_DRY_RUN:=0}"
 : "${RALPH_SUPERVISED_CMD:=}"        # ralph#25: command printing the supervised-path manifest (empty = no boundary configured, today's behaviour)
+: "${RALPH_DEFAULT_AUTO_MERGE:=false}" # ralph#26: opt-in default-on arming; NEVER flip the fleet-wide default here — per-repo config.env only
 
 repo_slug() {
   # CI first: $GITHUB_REPOSITORY is the runner's canonical slug. The checkout's
