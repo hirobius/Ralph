@@ -34,8 +34,16 @@ NAME only — actual secrets live in each caller repo / the org.
 - `.github/workflows/ralph-gate-reusable.yml` — the review gate: **kit-drift
   checksum guard** (vendored `ralph/` vs `kit/`; a PR touching a drifted kit
   file fails, pre-existing drift warns) + per-repo `ralph/gate.sh` +
-  independent AI review + HUMAN-approved merges (`ralph-approved` on the PR,
-  or `ralph-auto` pre-tagged on the issue) + one bounded self-heal per PR.
+  independent AI review + HUMAN-approved merges, now behind the
+  **supervised-path boundary** (`ralph_diff_is_supervised` in `kit/lib.sh`,
+  ralph#25): a diff touching a path a caller's `RALPH_SUPERVISED_CMD` names
+  never auto-merges regardless of which of the three reasons armed it
+  (`ralph-approved` on the PR, `ralph-auto` pre-tagged on the issue, or the
+  opt-in `RALPH_DEFAULT_AUTO_MERGE` posture below) — it posts an
+  awaiting-approval comment naming the supervised files instead, and only a
+  human adding `ralph-approved` merges it. Callers with no
+  `RALPH_SUPERVISED_CMD` configured see no change. One bounded self-heal per
+  PR either way.
 - `.github/workflows/ralph-triage-reusable.yml` — the intake comb
   (propose-then-approve): scopes candidate work into TDD-shaped issue
   proposals; never tags `ralph-ready`, never touches code.
