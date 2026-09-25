@@ -104,13 +104,27 @@ Lesson of ops#144: callers are *vendored files* that skew behind the engine —
 an engine change that tightens what it needs from callers broke every gate
 run org-wide with a blank `startup_failure`. Two rails prevent the class:
 
-- **Callers pin the `v1` tag, never `@main`.** `main` can then move freely
-  without changing what any fleet repo executes. Upgrading a repo = a
-  deliberate PR in that repo (bump the tag in its three callers), never a
-  side effect of an engine push.
+- **Callers pin `@v1`, never `@main`.** `main` can then move freely without
+  changing what any fleet repo executes. Upgrading a repo = a deliberate PR in
+  that repo (bump the ref in its three callers), never a side effect of an
+  engine push.
+
+  **`v1` is a BRANCH (`refs/heads/v1`), not a tag** — this repo has no tags at
+  all. Verify with `git ls-remote --tags origin` (empty) and by reading any
+  consumer run's `referenced_workflows`, which reports `ref: refs/heads/v1`.
+  Release it by fast-forwarding:
+
+  ```sh
+  git push origin origin/main:refs/heads/v1     # fast-forward, nothing discarded
+  ```
+
+  Do NOT run `git tag -f v1` — that creates a *tag* named `v1` beside the
+  *branch* named `v1`, leaving `@v1` ambiguous for every consumer at once.
+  Confirm `git merge-base --is-ancestor origin/v1 origin/main` first; if that
+  fails, `v1` has diverged and a force would discard commits.
 - **`v1` only moves for backward-compatible changes** — same caller files,
-  same permission contract, same inputs/secrets. Re-point it with
-  `git tag -f v1 <sha> && git push -f origin v1`. Anything that requires
+  same permission contract, same inputs/secrets. Re-point it with the
+  fast-forward push above. Anything that requires
   callers to change (new required permission, input, or secret) is **v2**:
   new tag, plus a PR per consumer repo updating its callers in the same
   breath. A permission a caller might lack must degrade gracefully in-run
