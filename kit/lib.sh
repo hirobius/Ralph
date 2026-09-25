@@ -32,6 +32,8 @@ fi
 : "${RALPH_AUTO_MERGE_LABEL:=ralph-auto}"
 : "${RALPH_APPROVE_LABEL:=ralph-approved}"
 : "${RALPH_DRY_RUN:=0}"
+: "${RALPH_SUPERVISED_CMD:=}"        # ralph#25: command printing the supervised-path manifest (empty = no boundary configured, today's behaviour)
+: "${RALPH_DEFAULT_AUTO_MERGE:=false}" # ralph#26: opt-in default-on arming; NEVER flip the fleet-wide default here — per-repo config.env only
 
 repo_slug() {
   # CI first: $GITHUB_REPOSITORY is the runner's canonical slug. The checkout's
@@ -71,6 +73,71 @@ gh_retry() {
     sleep "$delay"
   done
   echo "ralph: gh $1 failed after 3 attempts" >&2
+  return 1
+}
+
+# --------------------------------------------------------- supervised paths
+
+# ralph_diff_is_supervised — ralph#25. Reads the changed file paths for a
+# diff, one per line, on stdin. Prints the matched supervised path(s) (one
+# per line) to stdout and returns 0 when the diff touches a supervised path,
+# 1 when the diff is clean of them.
+#
+# RALPH_SUPERVISED_CMD (default empty) is a caller-configured command that
+# prints the supervised-path manifest, one entry per line: a trailing `/`
+# is a directory-prefix match (`lib/leads/` matches `lib/leads/foo.mjs`),
+# anything else is an exact-file match (`api/lead-action.ts` matches only
+# that path). This is the consumer side of ops#400's
+# `scripts/ralph-supervised-paths.mjs` — kit/lib.sh does not know or care how
+# the manifest is produced, only how to run it and read its output.
+#
+# RALPH_SUPERVISED_CMD unset → not supervised. This is deliberate: it is
+# today's behaviour, unchanged, for every caller that has not configured a
+# boundary command (hds, site-engine as of ralph#25) — arming logic must
+# reach the identical code path it does today rather than start blocking on
+# a manifest that doesn't exist yet.
+#
+# RALPH_SUPERVISED_CMD configured but it exits non-zero OR prints nothing →
+# FAILS CLOSED: the diff is reported supervised regardless of what changed,
+# because an unreadable boundary must never silently read as "nothing is
+# supervised". Never fail-open here — a broken manifest command must block
+# auto-merge, not skip the check.
+ralph_diff_is_supervised() {
+  local paths patterns rc=0 path pat matched=""
+  paths="$(cat)"
+  [ -z "${RALPH_SUPERVISED_CMD:-}" ] && return 1
+  patterns="$(eval "$RALPH_SUPERVISED_CMD" 2>/dev/null)" || rc=$?
+  if [ "$rc" -ne 0 ] || [ -z "$patterns" ]; then
+    echo "ralph_diff_is_supervised: RALPH_SUPERVISED_CMD failed or printed nothing — treating the diff as supervised" >&2
+    return 0
+  fi
+  [ -z "$paths" ] && return 1
+  while IFS= read -r path; do
+    [ -z "$path" ] && continue
+    while IFS= read -r pat; do
+      [ -z "$pat" ] && continue
+      case "$pat" in
+        */)
+          case "$path" in
+            "$pat"*)
+              matched="${matched}${path}"$'\n'
+              break
+              ;;
+          esac
+          ;;
+        *)
+          if [ "$path" = "$pat" ]; then
+            matched="${matched}${path}"$'\n'
+            break
+          fi
+          ;;
+      esac
+    done <<<"$patterns"
+  done <<<"$paths"
+  if [ -n "$matched" ]; then
+    printf '%s' "$matched"
+    return 0
+  fi
   return 1
 }
 

@@ -34,8 +34,16 @@ NAME only — actual secrets live in each caller repo / the org.
 - `.github/workflows/ralph-gate-reusable.yml` — the review gate: **kit-drift
   checksum guard** (vendored `ralph/` vs `kit/`; a PR touching a drifted kit
   file fails, pre-existing drift warns) + per-repo `ralph/gate.sh` +
-  independent AI review + HUMAN-approved merges (`ralph-approved` on the PR,
-  or `ralph-auto` pre-tagged on the issue) + one bounded self-heal per PR.
+  independent AI review + HUMAN-approved merges, now behind the
+  **supervised-path boundary** (`ralph_diff_is_supervised` in `kit/lib.sh`,
+  ralph#25): a diff touching a path a caller's `RALPH_SUPERVISED_CMD` names
+  never auto-merges regardless of which of the three reasons armed it
+  (`ralph-approved` on the PR, `ralph-auto` pre-tagged on the issue, or the
+  opt-in `RALPH_DEFAULT_AUTO_MERGE` posture below) — it posts an
+  awaiting-approval comment naming the supervised files instead, and only a
+  human adding `ralph-approved` merges it. Callers with no
+  `RALPH_SUPERVISED_CMD` configured see no change. One bounded self-heal per
+  PR either way.
 - `.github/workflows/ralph-triage-reusable.yml` — the intake comb
   (propose-then-approve): scopes candidate work into TDD-shaped issue
   proposals; never tags `ralph-ready`, never touches code.
@@ -68,6 +76,18 @@ NAME only — actual secrets live in each caller repo / the org.
 6. Tag issues `ralph-ready` (+ `p0`–`p3` priority, + `ralph-auto` to
    batch-pre-approve merges); approve other PRs with the `ralph-approved`
    label. Full contract: `hirobius/ops/ralph/README.md`.
+
+   | Knob | Default | What it does |
+   |---|---|---|
+   | `ralph-approved` (PR label) | — | Arms auto-merge on this one PR. |
+   | `ralph-auto` (issue label) | — | Pre-approves every PR closing this issue. |
+   | `RALPH_SUPERVISED_CMD` | empty (no boundary) | Command printing the supervised-path manifest (ops#400); a diff matching it never auto-merges under ANY of the three reasons below — it waits for a human `ralph-approved` instead (ralph#25). |
+   | `RALPH_DEFAULT_AUTO_MERGE` | `false` | Opt-in: a green gate + AI-approved PR with NO label at all still arms auto-merge (ralph#26). Still fully subject to the `RALPH_SUPERVISED_CMD` boundary — the flag can never bypass it. Set per-repo in `ralph/config.env`; the engine default is never flipped here. |
+
+   All three arming reasons (`ralph-approved`, issue `ralph-auto`,
+   `RALPH_DEFAULT_AUTO_MERGE`) are gated by the same supervised-path check —
+   none of them can merge a supervised diff without a human's
+   `ralph-approved`.
 7. **Recommended — idle watchdog:** add a `schedule:` trigger to the repo's
    run caller (`.github/workflows/ralph.yml`), e.g. `cron: "23 * * * *"`.
    Without it the loop is event-driven only and halts silently after a failed
