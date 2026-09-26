@@ -35,6 +35,7 @@ fi
 : "${RALPH_SUPERVISED_CMD:=}"        # ralph#25: command printing the supervised-path manifest (empty = no boundary configured, today's behaviour)
 : "${RALPH_DEFAULT_AUTO_MERGE:=false}" # ralph#26: opt-in default-on arming; NEVER flip the fleet-wide default here — per-repo config.env only
 : "${RALPH_WEDGE_GRACE_MIN:=10}"     # ralph#16: minutes to wait for a ralph-gate run to appear/post before calling it dead
+: "${RALPH_CLAIM_DEDUPE_SECS:=60}"   # ralph#17: a ralph-claim posted more recently than this = the double-claim race, not a distinct trigger
 
 repo_slug() {
   # CI first: $GITHUB_REPOSITORY is the runner's canonical slug. The checkout's
@@ -325,6 +326,41 @@ release_claim() {
   delete_claim_ref "$n" ||
     echo "ralph: WARNING — could not delete claim ref for #$n; it will block re-claims until the stale-TTL reclaim." >&2
   gh issue edit "$n" --remove-label ralph-wip >/dev/null 2>&1 || true
+}
+
+# recent_claim_within <secs> — ralph#17 double-claim dedupe. True when some
+# OTHER run's `ralph-claim` comment (the same comment claim_issue posts
+# alongside creating the refs/heads/ralph/claim-<n> ref — the two are created
+# together, so the comment's timestamp stands in for the ref's) was posted on
+# any currently in-flight (ralph-wip labeled) issue within the last <secs>
+# seconds.
+#
+# WHY THIS CATCHES THE RACE: a push-event guard run and the workflow_dispatch
+# chain hop it spawns for the same merge can both reach next.sh's selection
+# step seconds apart, because the caller's concurrency group
+# (cancel-in-progress: false) only serializes — it does not dedupe. The
+# second run then wakes, calls next.sh, and claims whatever the first run
+# already released, burning a redundant model iteration on work that was (or
+# is about to be) already claimed. A claim posted moments ago is that
+# signature; a claim from minutes/hours ago is just normal loop activity and
+# must never suppress a genuinely distinct trigger (label event, a cron tick
+# that found new ready work, ...).
+#
+# Scoped to ralph-wip issues (the label claim_issue sets alongside the ref)
+# rather than a repo-wide comment search: bounded to the handful of issues
+# that could plausibly be mid-claim right now, cheap, and needs no new gh
+# capability. On any gh/jq failure, or when nothing recent is found, returns
+# 1 (no dedupe) — an API hiccup must never suppress a real trigger.
+recent_claim_within() {
+  local secs=$1 wip newest now age
+  wip=$(gh issue list --label ralph-wip --state open --json comments 2>/dev/null) || return 1
+  [ -z "$wip" ] && return 1
+  newest=$(jq -r '[.[].comments[]? | select(.body | startswith("ralph-claim"))]
+    | sort_by(.createdAt) | (last.createdAt // empty)' <<<"$wip" 2>/dev/null) || return 1
+  [ -z "$newest" ] && return 1
+  now=$(date -u +%s)
+  age=$((now - $(epoch_of "$newest")))
+  [ "$age" -ge 0 ] && [ "$age" -lt "$secs" ]
 }
 
 # ------------------------------------------------------- attempts + parking

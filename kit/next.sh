@@ -21,11 +21,34 @@
 # selection — run.sh reclaims them.
 #
 # stdout: the selected issue number (nothing else).
-# Exit:   0 = picked · 10 = queue empty/exhausted · 20 = GitHub API failure.
+# Exit:   0 = picked · 10 = queue empty/exhausted (or the ralph#17 double-claim
+#         dedupe fired) · 20 = GitHub API failure.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 # shellcheck source=ralph/lib.sh
 . ralph/lib.sh
+
+# ralph#17: double-claim dedupe. A push-event guard run and the
+# workflow_dispatch chain hop it spawns for the same merge can both reach
+# this selector seconds apart — the caller's concurrency group
+# (cancel-in-progress: false) only serializes, it does not dedupe, so the
+# second run would otherwise claim whatever the first released and burn a
+# redundant iteration. Scoped tight, on purpose: a plain `push` event, or a
+# `workflow_dispatch` with NO explicit issue (blank ISSUE_INPUT — the hop
+# itself, or a manual dispatch left blank) are the only triggers that reach
+# next.sh without already knowing which issue they want. An explicit dispatch
+# (ISSUE_INPUT set) never calls next.sh at all — the caller steals its named
+# issue directly — and every other trigger (a `ralph-ready` label event, a
+# `schedule` idle-watchdog tick surfacing genuinely new ready work) must never
+# be suppressed by this.
+case "${GITHUB_EVENT_NAME:-}" in
+  push | workflow_dispatch)
+    if [ -z "${ISSUE_INPUT:-}" ] && recent_claim_within "$RALPH_CLAIM_DEDUPE_SECS"; then
+      echo "ralph: a ralph-claim was posted within the last ${RALPH_CLAIM_DEDUPE_SECS}s — likely the push/dispatch-hop double-fire (ralph#17); skipping this cycle." >&2
+      exit 10
+    fi
+    ;;
+esac
 
 issues=$(gh_retry issue list --label "$RALPH_READY_LABEL" --state open \
   --limit 100 --json number,labels,body) || exit 20

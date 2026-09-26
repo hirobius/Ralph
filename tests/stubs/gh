@@ -86,7 +86,22 @@ case "$1 ${2:-}" in
   serve "run_list_${branch//\//_}.json"
   ;;
 "pr view") serve "pr_view_$issue.json" ;;
-"issue list") serve issue_list.json ;;
+"issue list")
+  # ralph#17 recent_claim_within: `gh issue list --label ralph-wip ...` is a
+  # distinct query from next.sh's `--label ralph-ready` candidate list — keyed
+  # on --label so each gets its own fixture; anything else (including the
+  # long-standing ralph-ready call, which never used to need this) falls back
+  # to the original fixture unchanged.
+  label=""
+  args=("$@")
+  for ((i = 0; i < ${#args[@]}; i++)); do
+    [ "${args[i]}" = "--label" ] && label="${args[i + 1]:-}"
+  done
+  case "$label" in
+  ralph-wip) serve issue_list_wip.json ;;
+  *) serve issue_list.json ;;
+  esac
+  ;;
 "issue view")
   case "$argv" in
   *"--json comments"*) serve "issue_view_comments_$issue.json" ;;
