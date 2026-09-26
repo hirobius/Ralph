@@ -68,18 +68,22 @@ case "$1 ${2:-}" in
   ;;
 "pr create") mutate ;;
 "run list")
-  # ralph#16 classify_wedged: gh run list --workflow ralph-gate.yml --commit
-  # <sha> --json status,createdAt. Fixture keyed by the --commit sha.
-  sha=""
+  # ralph#16 classify_wedged: gh run list --workflow ralph-gate.yml --branch
+  # <branch> --json status,createdAt. Fixture keyed by the --branch value
+  # (slashes sanitized to underscores for the filename) — looked up by
+  # branch, not head sha, because a self-heal push cannot re-trigger this
+  # workflow and its re-gate/re-review run inline on the SAME run that
+  # started for an earlier sha on the same branch.
+  branch=""
   args=("$@")
   for ((i = 0; i < ${#args[@]}; i++)); do
-    [ "${args[i]}" = "--commit" ] && sha="${args[i + 1]:-}"
+    [ "${args[i]}" = "--branch" ] && branch="${args[i + 1]:-}"
   done
-  if [ -z "$sha" ]; then
-    echo "stub-gh: run list without --commit: gh $argv" >&2
+  if [ -z "$branch" ]; then
+    echo "stub-gh: run list without --branch: gh $argv" >&2
     exit 1
   fi
-  serve "run_list_$sha.json"
+  serve "run_list_${branch//\//_}.json"
   ;;
 "pr view") serve "pr_view_$issue.json" ;;
 "issue list") serve issue_list.json ;;

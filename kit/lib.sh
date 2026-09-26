@@ -183,8 +183,9 @@ open_ralph_prs() {
 # "gate crashed / never fired" — the old code waited a flat 3h to find out,
 # stalling the single-flight queue silently the whole time. So when the
 # posted status isn't yet failure/success, ask GitHub directly whether a
-# ralph-gate run exists for the head sha:
-#   - a queued/in_progress run  → healthy in-flight, no matter the PR age.
+# ralph-gate run exists for the PR's branch:
+#   - any run whose status isn't "completed" (queued/in_progress/requested/
+#     waiting/pending/…) → healthy in-flight, no matter the PR age.
 #   - no run at all, PR older than RALPH_WEDGE_GRACE_MIN minutes → wedged now
 #     (gate never started).
 #   - only completed run(s) and still no posted status, PR older than the
@@ -192,11 +193,21 @@ open_ralph_prs() {
 #   - the run-lookup itself fails (gh error, rate limit, workflow renamed) →
 #     fall back to the original age-only 3h rule, since "running" vs "dead"
 #     can't be told apart without it.
+#
+# Looked up BY BRANCH, not by head sha (ralph#16 review round 2): the gate's
+# self-heal step pushes a fix commit with a GITHUB_TOKEN push
+# (`git push origin HEAD:<head_ref>`), which cannot re-trigger this workflow —
+# the re-gate and re-review run inline in the SAME job and the verdict is
+# posted on the new, live head sha. So a commit-sha run lookup for that new
+# sha always comes back empty even though the gate is actively re-running,
+# and every self-heal whose re-gate+re-review takes longer than the grace
+# period would false-alarm as wedged. Branch-based lookup finds the run that
+# is actually in flight regardless of which sha triggered it.
 classify_wedged() {
-  local prs now n sha updated gate age_h age_min runs lookup_ok live_count run_count
+  local prs now n sha branch updated gate age_h age_min runs lookup_ok live_count run_count
   prs=$(cat)
   now=$(date -u +%s)
-  while read -r n sha updated; do
+  while read -r n sha branch updated; do
     [ -z "$n" ] && continue
     gate=$(gh api "repos/$(repo_slug)/commits/$sha/status" \
       --jq '[.statuses[] | select(.context=="ralph-gate")] | sort_by(.created_at) | (last.state // "none")' \
@@ -209,17 +220,17 @@ classify_wedged() {
     fi
     [ "$gate" = "none" ] || [ "$gate" = "pending" ] || continue
     lookup_ok=1
-    runs=$(gh run list --workflow ralph-gate.yml --commit "$sha" --json status,createdAt 2>/dev/null) || lookup_ok=0
+    runs=$(gh run list --workflow ralph-gate.yml --branch "$branch" --json status,createdAt 2>/dev/null) || lookup_ok=0
     [ -n "$runs" ] || lookup_ok=0
     if [ "$lookup_ok" -eq 1 ]; then
-      live_count=$(jq -r '[.[] | select(.status=="queued" or .status=="in_progress")] | length' <<<"$runs" 2>/dev/null) || live_count=0
+      live_count=$(jq -r '[.[] | select(.status != "completed")] | length' <<<"$runs" 2>/dev/null) || live_count=0
       run_count=$(jq -r 'length' <<<"$runs" 2>/dev/null) || run_count=0
       [ "${live_count:-0}" -gt 0 ] && continue # a live run — healthy, regardless of age
       if [ "$age_min" -ge "$RALPH_WEDGE_GRACE_MIN" ]; then
         if [ "${run_count:-0}" -eq 0 ]; then
-          echo "- #$n — open ${age_min}m, no ralph-gate run found for the head sha (gate never started)."
+          echo "- #$n — open ${age_min}m, no ralph-gate run found for the branch (gate never started)."
         else
-          echo "- #$n — ralph-gate run(s) completed for the head sha but no status was posted (gate died mid-run)."
+          echo "- #$n — ralph-gate run(s) completed for the branch but no status was posted (gate died mid-run)."
         fi
       fi
       # else: within the grace period, no live run yet — healthy (still spinning up)
@@ -229,7 +240,7 @@ classify_wedged() {
     if [ "$age_h" -ge 3 ]; then
       echo "- #$n — open ${age_h}h with no passing ralph-gate (stale / never gated)."
     fi
-  done < <(jq -r '.[] | "\(.number) \(.headRefOid) \(.updatedAt)"' <<<"$prs")
+  done < <(jq -r '.[] | "\(.number) \(.headRefOid) \(.headRefName) \(.updatedAt)"' <<<"$prs")
 }
 
 # ------------------------------------------------------------------- claims
