@@ -245,6 +245,48 @@ out=$(run_reconcile)
 assert_contains "$out" "failed:" "no-ship is a failure"
 assert_contains "$out" "attempt 1/2" "attempt counted against the budget"
 assert_mutation "ralph-attempt-failed run-1" "attempt comment posted"
+assert_mutation "likely budget exhaustion or a silent end" "ralph#10: no-branch/no-comment note added to the attempt comment"
+assert_mutation "consider splitting the issue" "ralph#10: note nudges toward splitting"
+
+# ── 10b. ralph#10: RALPH_RESULT_FILE, when set, has its tail appended to the
+#        same no-branch/no-comment attempt comment — turning an unexplainable
+#        silent end into a diagnosable one.
+new_case result_file_tail_appended
+std_claim_comment
+std_state_queued
+fixture api_issue_events_126.json <<'JSON'
+[{"event": "labeled", "label": {"name": "ralph-ready"},
+  "created_at": "2026-07-11T00:00:00Z"}]
+JSON
+fixture issue_view_comments_126.json <<'JSON'
+{"comments": []}
+JSON
+RESULT_FILE="$CASE/result.txt"
+printf 'I got partway through refactoring foo.ts but ran out of budget before wiring the tests.' >"$RESULT_FILE"
+export RALPH_RESULT_FILE="$RESULT_FILE"
+out=$(run_reconcile)
+unset RALPH_RESULT_FILE
+assert_contains "$out" "failed:" "no-ship is still a failure"
+assert_mutation "likely budget exhaustion or a silent end" "note still present with a result file"
+assert_mutation "ran out of budget before wiring the tests" "agent's final result text appended"
+
+# ── 10c. ralph#10: an unset/unreadable RALPH_RESULT_FILE must not break the
+#        attempt comment — the note still posts, just without a tail.
+new_case result_file_missing_is_skipped
+std_claim_comment
+std_state_queued
+fixture api_issue_events_126.json <<'JSON'
+[{"event": "labeled", "label": {"name": "ralph-ready"},
+  "created_at": "2026-07-11T00:00:00Z"}]
+JSON
+fixture issue_view_comments_126.json <<'JSON'
+{"comments": []}
+JSON
+export RALPH_RESULT_FILE="$CASE/does-not-exist.txt"
+out=$(run_reconcile)
+unset RALPH_RESULT_FILE
+assert_contains "$out" "failed:" "no-ship is still a failure"
+assert_mutation "likely budget exhaustion or a silent end" "note posts even with a missing result file"
 
 # ── 11. Attempt cap reached → parked to ralph-parked ─────────────────────────
 new_case cap_parks

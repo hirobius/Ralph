@@ -450,6 +450,39 @@ record_failed_attempt() { # <n> <run_id> <reason>
   gh issue comment "$1" --body "ralph-attempt-failed $2 — $3" >/dev/null 2>&1 || true
 }
 
+# ralph#10: on a genuine no-ship (no branch pushed, no comment of any kind
+# from the model this cycle) the operator gets a park with nothing written by
+# the iteration itself — could be turn/time budget exhaustion, could be a
+# clean-but-silent SDK end (ralph#10's second reproduction: 28 turns, 5.5
+# minutes, no permission wall — not exhaustion). Both look identical from
+# outside, so name the uncertainty rather than guessing at a cause, and
+# nudge toward the one mitigation that helps either way: splitting the issue.
+#
+# RALPH_RESULT_FILE (optional, set by the workflow) is the agent's own final
+# result text — `result.result` from the SDK response, not full transcript.
+# Appending its tail turns an unexplainable park into a diagnosable one
+# (ralph#10's stated fix: this is the workflow-side half described in the
+# issue as "capture the agent's final result text on a no-side-effect
+# iteration"). Missing/empty/unreadable file is silently skipped — this must
+# never fail the reconcile over a missing env var or a workflow that hasn't
+# wired it in yet.
+no_output_note() {
+  local note="iteration produced no output — likely budget exhaustion or a silent end; consider splitting the issue"
+  if [ -n "${RALPH_RESULT_FILE:-}" ] && [ -r "$RALPH_RESULT_FILE" ]; then
+    local tail
+    tail=$(tail -c 4000 "$RALPH_RESULT_FILE" 2>/dev/null || true)
+    if [ -n "$tail" ]; then
+      note="$note
+
+Agent's final result (tail):
+\`\`\`
+$tail
+\`\`\`"
+    fi
+  fi
+  echo "$note"
+}
+
 # park_issue <n> <reason> <label: ralph-parked|needs-adrian>
 # Parking = out of the queue WITH a written reason — never a silent drop,
 # never a false "done". Reversible: re-add the ready label to retry.
@@ -672,7 +705,14 @@ This branch was chosen because its head commit is the newest. If the work you wa
   # 7) Genuine no-ship → record the attempt, release the claim, park on cap.
   #    An `unknown` count (API blindness) fails WITHOUT parking — next.sh
   #    re-checks the budget fail-closed before ever re-offering the issue.
-  record_failed_attempt "$n" "$run_id" "$why"
+  #    ralph#10: no branch pushed at all (not the "branch pushed, PR create
+  #    failed" sub-case) AND no model comment of any kind this cycle (already
+  #    ruled out by steps 4/6.5 above) is exactly the unexplainable-silent-end
+  #    signature — name it, and attach the agent's own result text if the
+  #    workflow gave us one.
+  local reason=$why
+  [ -z "$branch" ] && reason="$why — $(no_output_note)"
+  record_failed_attempt "$n" "$run_id" "$reason"
   release_claim "$n"
   fails=$(count_failed_attempts "$n")
   if [ "$fails" = "unknown" ]; then
