@@ -34,6 +34,7 @@ fi
 : "${RALPH_DRY_RUN:=0}"
 : "${RALPH_SUPERVISED_CMD:=}"        # ralph#25: command printing the supervised-path manifest (empty = no boundary configured, today's behaviour)
 : "${RALPH_DEFAULT_AUTO_MERGE:=false}" # ralph#26: opt-in default-on arming; NEVER flip the fleet-wide default here — per-repo config.env only
+: "${RALPH_WEDGE_GRACE_MIN:=10}"     # ralph#16: minutes to wait for a ralph-gate run to appear/post before calling it dead
 
 repo_slug() {
   # CI first: $GITHUB_REPOSITORY is the runner's canonical slug. The checkout's
@@ -175,10 +176,24 @@ open_ralph_prs() {
 }
 
 # classify_wedged  (stdin: open_ralph_prs JSON)
-# Prints "- #N — reason" per WEDGED PR (failed ralph-gate, or ≥3h with no
-# passing gate); prints nothing when every open Ralph PR is healthy in-flight.
+# Prints "- #N — reason" per WEDGED PR; prints nothing when every open Ralph
+# PR is healthy in-flight.
+#
+# ralph#16: gate="none"/"pending" alone can't tell "gate is running" from
+# "gate crashed / never fired" — the old code waited a flat 3h to find out,
+# stalling the single-flight queue silently the whole time. So when the
+# posted status isn't yet failure/success, ask GitHub directly whether a
+# ralph-gate run exists for the head sha:
+#   - a queued/in_progress run  → healthy in-flight, no matter the PR age.
+#   - no run at all, PR older than RALPH_WEDGE_GRACE_MIN minutes → wedged now
+#     (gate never started).
+#   - only completed run(s) and still no posted status, PR older than the
+#     grace period → wedged now (gate died mid-run without posting).
+#   - the run-lookup itself fails (gh error, rate limit, workflow renamed) →
+#     fall back to the original age-only 3h rule, since "running" vs "dead"
+#     can't be told apart without it.
 classify_wedged() {
-  local prs now n sha updated gate age_h
+  local prs now n sha updated gate age_h age_min runs lookup_ok live_count run_count
   prs=$(cat)
   now=$(date -u +%s)
   while read -r n sha updated; do
@@ -187,9 +202,31 @@ classify_wedged() {
       --jq '[.statuses[] | select(.context=="ralph-gate")] | sort_by(.created_at) | (last.state // "none")' \
       2>/dev/null || echo none)
     age_h=$(((now - $(epoch_of "$updated")) / 3600))
+    age_min=$(((now - $(epoch_of "$updated")) / 60))
     if [ "$gate" = "failure" ]; then
       echo "- #$n — ralph-gate FAILED (changes requested / red gate); needs a human."
-    elif { [ "$gate" = "none" ] || [ "$gate" = "pending" ]; } && [ "$age_h" -ge 3 ]; then
+      continue
+    fi
+    [ "$gate" = "none" ] || [ "$gate" = "pending" ] || continue
+    lookup_ok=1
+    runs=$(gh run list --workflow ralph-gate.yml --commit "$sha" --json status,createdAt 2>/dev/null) || lookup_ok=0
+    [ -n "$runs" ] || lookup_ok=0
+    if [ "$lookup_ok" -eq 1 ]; then
+      live_count=$(jq -r '[.[] | select(.status=="queued" or .status=="in_progress")] | length' <<<"$runs" 2>/dev/null) || live_count=0
+      run_count=$(jq -r 'length' <<<"$runs" 2>/dev/null) || run_count=0
+      [ "${live_count:-0}" -gt 0 ] && continue # a live run — healthy, regardless of age
+      if [ "$age_min" -ge "$RALPH_WEDGE_GRACE_MIN" ]; then
+        if [ "${run_count:-0}" -eq 0 ]; then
+          echo "- #$n — open ${age_min}m, no ralph-gate run found for the head sha (gate never started)."
+        else
+          echo "- #$n — ralph-gate run(s) completed for the head sha but no status was posted (gate died mid-run)."
+        fi
+      fi
+      # else: within the grace period, no live run yet — healthy (still spinning up)
+      continue
+    fi
+    # run-lookup failed/unusable — fall back to the original 3h age-only rule.
+    if [ "$age_h" -ge 3 ]; then
       echo "- #$n — open ${age_h}h with no passing ralph-gate (stale / never gated)."
     fi
   done < <(jq -r '.[] | "\(.number) \(.headRefOid) \(.updatedAt)"' <<<"$prs")

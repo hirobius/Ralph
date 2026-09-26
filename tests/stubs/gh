@@ -67,6 +67,20 @@ case "$1 ${2:-}" in
   esac
   ;;
 "pr create") mutate ;;
+"run list")
+  # ralph#16 classify_wedged: gh run list --workflow ralph-gate.yml --commit
+  # <sha> --json status,createdAt. Fixture keyed by the --commit sha.
+  sha=""
+  args=("$@")
+  for ((i = 0; i < ${#args[@]}; i++)); do
+    [ "${args[i]}" = "--commit" ] && sha="${args[i + 1]:-}"
+  done
+  if [ -z "$sha" ]; then
+    echo "stub-gh: run list without --commit: gh $argv" >&2
+    exit 1
+  fi
+  serve "run_list_$sha.json"
+  ;;
 "pr view") serve "pr_view_$issue.json" ;;
 "issue list") serve issue_list.json ;;
 "issue view")
@@ -85,6 +99,14 @@ case "$1 ${2:-}" in
   case "$argv" in
   *"/issues/$issue/comments"*) serve "api_issue_comments_$issue.json" ;;
   *"/issues/$issue/events"*) serve "api_issue_events_$issue.json" ;;
+  *"/commits/"*"/status"*)
+    # ralph#16 classify_wedged: repos/.../commits/<sha>/status — the posted
+    # ralph-gate commit status. Distinct fixture namespace from the bare
+    # /commits/<sha> lookup below (different shape, different caller).
+    sha="${argv#*/commits/}"
+    sha="${sha%%/status*}"
+    serve "commit_status_$sha.json"
+    ;;
   *"/commits/"*)
     # newest_branch dating a candidate orphan (ralph#18). Fixture per sha, so a
     # case can give two branches different commit dates. A missing fixture is a
