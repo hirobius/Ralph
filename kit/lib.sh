@@ -34,6 +34,9 @@ fi
 : "${RALPH_DRY_RUN:=0}"
 : "${RALPH_SUPERVISED_CMD:=}"        # ralph#25: command printing the supervised-path manifest (empty = no boundary configured, today's behaviour)
 : "${RALPH_DEFAULT_AUTO_MERGE:=false}" # ralph#26: opt-in default-on arming; NEVER flip the fleet-wide default here — per-repo config.env only
+: "${RALPH_WEDGE_GRACE_MIN:=10}"     # ralph#16: minutes to wait for a ralph-gate run to appear/post before calling it dead
+: "${RALPH_CLAIM_DEDUPE_SECS:=60}"   # ralph#17: a ralph-claim posted more recently than this = the double-claim race, not a distinct trigger
+: "${RALPH_DOD_DRAFT_CMD:=}"         # ops#296: command drafting a DoD checklist from the issue body on stdin (a haiku-model call); empty = heuristic fallback, no workflow wiring required
 
 repo_slug() {
   # CI first: $GITHUB_REPOSITORY is the runner's canonical slug. The checkout's
@@ -175,24 +178,71 @@ open_ralph_prs() {
 }
 
 # classify_wedged  (stdin: open_ralph_prs JSON)
-# Prints "- #N — reason" per WEDGED PR (failed ralph-gate, or ≥3h with no
-# passing gate); prints nothing when every open Ralph PR is healthy in-flight.
+# Prints "- #N — reason" per WEDGED PR; prints nothing when every open Ralph
+# PR is healthy in-flight.
+#
+# ralph#16: gate="none"/"pending" alone can't tell "gate is running" from
+# "gate crashed / never fired" — the old code waited a flat 3h to find out,
+# stalling the single-flight queue silently the whole time. So when the
+# posted status isn't yet failure/success, ask GitHub directly whether a
+# ralph-gate run exists for the PR's branch:
+#   - any run whose status isn't "completed" (queued/in_progress/requested/
+#     waiting/pending/…) → healthy in-flight, no matter the PR age.
+#   - no run at all, PR older than RALPH_WEDGE_GRACE_MIN minutes → wedged now
+#     (gate never started).
+#   - only completed run(s) and still no posted status, PR older than the
+#     grace period → wedged now (gate died mid-run without posting).
+#   - the run-lookup itself fails (gh error, rate limit, workflow renamed) →
+#     fall back to the original age-only 3h rule, since "running" vs "dead"
+#     can't be told apart without it.
+#
+# Looked up BY BRANCH, not by head sha (ralph#16 review round 2): the gate's
+# self-heal step pushes a fix commit with a GITHUB_TOKEN push
+# (`git push origin HEAD:<head_ref>`), which cannot re-trigger this workflow —
+# the re-gate and re-review run inline in the SAME job and the verdict is
+# posted on the new, live head sha. So a commit-sha run lookup for that new
+# sha always comes back empty even though the gate is actively re-running,
+# and every self-heal whose re-gate+re-review takes longer than the grace
+# period would false-alarm as wedged. Branch-based lookup finds the run that
+# is actually in flight regardless of which sha triggered it.
 classify_wedged() {
-  local prs now n sha updated gate age_h
+  local prs now n sha branch updated gate age_h age_min runs lookup_ok live_count run_count
   prs=$(cat)
   now=$(date -u +%s)
-  while read -r n sha updated; do
+  while read -r n sha branch updated; do
     [ -z "$n" ] && continue
     gate=$(gh api "repos/$(repo_slug)/commits/$sha/status" \
       --jq '[.statuses[] | select(.context=="ralph-gate")] | sort_by(.created_at) | (last.state // "none")' \
       2>/dev/null || echo none)
     age_h=$(((now - $(epoch_of "$updated")) / 3600))
+    age_min=$(((now - $(epoch_of "$updated")) / 60))
     if [ "$gate" = "failure" ]; then
       echo "- #$n — ralph-gate FAILED (changes requested / red gate); needs a human."
-    elif { [ "$gate" = "none" ] || [ "$gate" = "pending" ]; } && [ "$age_h" -ge 3 ]; then
+      continue
+    fi
+    [ "$gate" = "none" ] || [ "$gate" = "pending" ] || continue
+    lookup_ok=1
+    runs=$(gh run list --workflow ralph-gate.yml --branch "$branch" --json status,createdAt 2>/dev/null) || lookup_ok=0
+    [ -n "$runs" ] || lookup_ok=0
+    if [ "$lookup_ok" -eq 1 ]; then
+      live_count=$(jq -r '[.[] | select(.status != "completed")] | length' <<<"$runs" 2>/dev/null) || live_count=0
+      run_count=$(jq -r 'length' <<<"$runs" 2>/dev/null) || run_count=0
+      [ "${live_count:-0}" -gt 0 ] && continue # a live run — healthy, regardless of age
+      if [ "$age_min" -ge "$RALPH_WEDGE_GRACE_MIN" ]; then
+        if [ "${run_count:-0}" -eq 0 ]; then
+          echo "- #$n — open ${age_min}m, no ralph-gate run found for the branch (gate never started)."
+        else
+          echo "- #$n — ralph-gate run(s) completed for the branch but no status was posted (gate died mid-run)."
+        fi
+      fi
+      # else: within the grace period, no live run yet — healthy (still spinning up)
+      continue
+    fi
+    # run-lookup failed/unusable — fall back to the original 3h age-only rule.
+    if [ "$age_h" -ge 3 ]; then
       echo "- #$n — open ${age_h}h with no passing ralph-gate (stale / never gated)."
     fi
-  done < <(jq -r '.[] | "\(.number) \(.headRefOid) \(.updatedAt)"' <<<"$prs")
+  done < <(jq -r '.[] | "\(.number) \(.headRefOid) \(.headRefName) \(.updatedAt)"' <<<"$prs")
 }
 
 # ------------------------------------------------------------------- claims
@@ -277,6 +327,41 @@ release_claim() {
   delete_claim_ref "$n" ||
     echo "ralph: WARNING — could not delete claim ref for #$n; it will block re-claims until the stale-TTL reclaim." >&2
   gh issue edit "$n" --remove-label ralph-wip >/dev/null 2>&1 || true
+}
+
+# recent_claim_within <secs> — ralph#17 double-claim dedupe. True when some
+# OTHER run's `ralph-claim` comment (the same comment claim_issue posts
+# alongside creating the refs/heads/ralph/claim-<n> ref — the two are created
+# together, so the comment's timestamp stands in for the ref's) was posted on
+# any currently in-flight (ralph-wip labeled) issue within the last <secs>
+# seconds.
+#
+# WHY THIS CATCHES THE RACE: a push-event guard run and the workflow_dispatch
+# chain hop it spawns for the same merge can both reach next.sh's selection
+# step seconds apart, because the caller's concurrency group
+# (cancel-in-progress: false) only serializes — it does not dedupe. The
+# second run then wakes, calls next.sh, and claims whatever the first run
+# already released, burning a redundant model iteration on work that was (or
+# is about to be) already claimed. A claim posted moments ago is that
+# signature; a claim from minutes/hours ago is just normal loop activity and
+# must never suppress a genuinely distinct trigger (label event, a cron tick
+# that found new ready work, ...).
+#
+# Scoped to ralph-wip issues (the label claim_issue sets alongside the ref)
+# rather than a repo-wide comment search: bounded to the handful of issues
+# that could plausibly be mid-claim right now, cheap, and needs no new gh
+# capability. On any gh/jq failure, or when nothing recent is found, returns
+# 1 (no dedupe) — an API hiccup must never suppress a real trigger.
+recent_claim_within() {
+  local secs=$1 wip newest now age
+  wip=$(gh issue list --label ralph-wip --state open --json comments 2>/dev/null) || return 1
+  [ -z "$wip" ] && return 1
+  newest=$(jq -r '[.[].comments[]? | select(.body | startswith("ralph-claim"))]
+    | sort_by(.createdAt) | (last.createdAt // empty)' <<<"$wip" 2>/dev/null) || return 1
+  [ -z "$newest" ] && return 1
+  now=$(date -u +%s)
+  age=$((now - $(epoch_of "$newest")))
+  [ "$age" -ge 0 ] && [ "$age" -lt "$secs" ]
 }
 
 # ------------------------------------------------------- attempts + parking
@@ -448,6 +533,96 @@ This is ops#305. It is not always malformed syntax — PR #360 carried a clean, 
 record_failed_attempt() { # <n> <run_id> <reason>
   [ "$RALPH_DRY_RUN" = "1" ] && return 0
   gh issue comment "$1" --body "ralph-attempt-failed $2 — $3" >/dev/null 2>&1 || true
+}
+
+# ralph#10: on a genuine no-ship (no branch pushed, no comment of any kind
+# from the model this cycle) the operator gets a park with nothing written by
+# the iteration itself — could be turn/time budget exhaustion, could be a
+# clean-but-silent SDK end (ralph#10's second reproduction: 28 turns, 5.5
+# minutes, no permission wall — not exhaustion). Both look identical from
+# outside, so name the uncertainty rather than guessing at a cause, and
+# nudge toward the one mitigation that helps either way: splitting the issue.
+#
+# RALPH_RESULT_FILE (optional, set by the workflow) is the agent's own final
+# result text — `result.result` from the SDK response, not full transcript.
+# Appending its tail turns an unexplainable park into a diagnosable one
+# (ralph#10's stated fix: this is the workflow-side half described in the
+# issue as "capture the agent's final result text on a no-side-effect
+# iteration"). Missing/empty/unreadable file is silently skipped — this must
+# never fail the reconcile over a missing env var or a workflow that hasn't
+# wired it in yet.
+no_output_note() {
+  local note="iteration produced no output — likely budget exhaustion or a silent end; consider splitting the issue"
+  if [ -n "${RALPH_RESULT_FILE:-}" ] && [ -r "$RALPH_RESULT_FILE" ]; then
+    local tail
+    tail=$(tail -c 4000 "$RALPH_RESULT_FILE" 2>/dev/null || true)
+    if [ -n "$tail" ]; then
+      note="$note
+
+Agent's final result (tail):
+\`\`\`
+$tail
+\`\`\`"
+    fi
+  fi
+  echo "$note"
+}
+
+# --------------------------------------------------------- DoD draft (ops#296)
+#
+# Frontier-doctrine decision (ops#274 / ops#296, Adrian 2026-09-26): a missing
+# DoD checklist is a context gap, not a rejection. Instead of parking bare,
+# next.sh drafts a checklist and posts it as a COMMENT — never into the issue
+# body, so it can never overwrite anything a human wrote — then parks to
+# needs-adrian as before so nothing auto-proceeds. A human reviews, folds it
+# into the body (edited or as-is), and re-adds ralph-ready.
+
+# heuristic_dod_draft <body> — zero-dependency fallback: pulls any existing
+# "- " bullets out of the body (Proposal/plan lines often already state the
+# acceptance shape) and always adds a generic pair so the draft is never
+# empty. Deliberately dumb — it exists so the feature works with no engine
+# wiring at all; draft_dod_checklist prefers a real model when configured.
+heuristic_dod_draft() {
+  local body=$1 bullets
+  bullets=$(grep -E '^[[:space:]]*[-*][[:space:]]+\S' <<<"$body" | sed -E 's/^[[:space:]]*[-*][[:space:]]+/- [ ] /' | head -n 8)
+  {
+    echo "- [ ] TODO (drafted, unreviewed): confirm the concrete outcome this issue delivers"
+    [ -n "$bullets" ] && printf '%s\n' "$bullets"
+    echo "- [ ] TODO (drafted, unreviewed): confirm how success will be verified (test, manual check, etc.)"
+  }
+}
+
+# draft_dod_checklist <body> — echoes checklist markdown, prefixed with the
+# `ralph-dod-draft:` marker line a human (or a future re-check) can grep for.
+# RALPH_DOD_DRAFT_CMD, if set, is a command that receives the issue body on
+# stdin and prints checklist markdown on stdout (e.g. a `claude --model
+# haiku...` one-liner, per the ops#296 dispatch-rules pick of the cheap tier
+# for non-architectural drafting) — that wiring is a workflow-level change
+# (new step/secret in ralph-run-reusable.yml) and is NOT implemented here; see
+# the repo README / issue for the exact patch. Unset, or the command producing
+# nothing, falls back to the heuristic so this never blocks on missing wiring.
+draft_dod_checklist() {
+  local body=$1 draft=""
+  if [ -n "$RALPH_DOD_DRAFT_CMD" ]; then
+    draft=$(printf '%s' "$body" | eval "$RALPH_DOD_DRAFT_CMD" 2>/dev/null || true)
+  fi
+  if [ -z "$(tr -d '[:space:]' <<<"$draft")" ]; then
+    draft=$(heuristic_dod_draft "$body")
+  fi
+  printf 'ralph-dod-draft:\n%s' "$draft"
+}
+
+# post_dod_draft <n> <body> — the comment side-effect; never touches the issue
+# body. Best-effort like park_issue's own comment: a failure here must not
+# crash the candidate walk in next.sh.
+post_dod_draft() {
+  local n=$1 body=$2 draft
+  if [ "$RALPH_DRY_RUN" = "1" ]; then
+    echo "ralph[dry-run]: would post a ralph-dod-draft: comment on #$n" >&2
+    return 0
+  fi
+  draft=$(draft_dod_checklist "$body")
+  gh_retry issue comment "$n" --body "$draft" >/dev/null || true
 }
 
 # park_issue <n> <reason> <label: ralph-parked|needs-adrian>
@@ -672,7 +847,14 @@ This branch was chosen because its head commit is the newest. If the work you wa
   # 7) Genuine no-ship → record the attempt, release the claim, park on cap.
   #    An `unknown` count (API blindness) fails WITHOUT parking — next.sh
   #    re-checks the budget fail-closed before ever re-offering the issue.
-  record_failed_attempt "$n" "$run_id" "$why"
+  #    ralph#10: no branch pushed at all (not the "branch pushed, PR create
+  #    failed" sub-case) AND no model comment of any kind this cycle (already
+  #    ruled out by steps 4/6.5 above) is exactly the unexplainable-silent-end
+  #    signature — name it, and attach the agent's own result text if the
+  #    workflow gave us one.
+  local reason=$why
+  [ -z "$branch" ] && reason="$why — $(no_output_note)"
+  record_failed_attempt "$n" "$run_id" "$reason"
   release_claim "$n"
   fails=$(count_failed_attempts "$n")
   if [ "$fails" = "unknown" ]; then

@@ -67,8 +67,41 @@ case "$1 ${2:-}" in
   esac
   ;;
 "pr create") mutate ;;
+"run list")
+  # ralph#16 classify_wedged: gh run list --workflow ralph-gate.yml --branch
+  # <branch> --json status,createdAt. Fixture keyed by the --branch value
+  # (slashes sanitized to underscores for the filename) — looked up by
+  # branch, not head sha, because a self-heal push cannot re-trigger this
+  # workflow and its re-gate/re-review run inline on the SAME run that
+  # started for an earlier sha on the same branch.
+  branch=""
+  args=("$@")
+  for ((i = 0; i < ${#args[@]}; i++)); do
+    [ "${args[i]}" = "--branch" ] && branch="${args[i + 1]:-}"
+  done
+  if [ -z "$branch" ]; then
+    echo "stub-gh: run list without --branch: gh $argv" >&2
+    exit 1
+  fi
+  serve "run_list_${branch//\//_}.json"
+  ;;
 "pr view") serve "pr_view_$issue.json" ;;
-"issue list") serve issue_list.json ;;
+"issue list")
+  # ralph#17 recent_claim_within: `gh issue list --label ralph-wip ...` is a
+  # distinct query from next.sh's `--label ralph-ready` candidate list — keyed
+  # on --label so each gets its own fixture; anything else (including the
+  # long-standing ralph-ready call, which never used to need this) falls back
+  # to the original fixture unchanged.
+  label=""
+  args=("$@")
+  for ((i = 0; i < ${#args[@]}; i++)); do
+    [ "${args[i]}" = "--label" ] && label="${args[i + 1]:-}"
+  done
+  case "$label" in
+  ralph-wip) serve issue_list_wip.json ;;
+  *) serve issue_list.json ;;
+  esac
+  ;;
 "issue view")
   case "$argv" in
   *"--json comments"*) serve "issue_view_comments_$issue.json" ;;
@@ -85,6 +118,14 @@ case "$1 ${2:-}" in
   case "$argv" in
   *"/issues/$issue/comments"*) serve "api_issue_comments_$issue.json" ;;
   *"/issues/$issue/events"*) serve "api_issue_events_$issue.json" ;;
+  *"/commits/"*"/status"*)
+    # ralph#16 classify_wedged: repos/.../commits/<sha>/status — the posted
+    # ralph-gate commit status. Distinct fixture namespace from the bare
+    # /commits/<sha> lookup below (different shape, different caller).
+    sha="${argv#*/commits/}"
+    sha="${sha%%/status*}"
+    serve "commit_status_$sha.json"
+    ;;
   *"/commits/"*)
     # newest_branch dating a candidate orphan (ralph#18). Fixture per sha, so a
     # case can give two branches different commit dates. A missing fixture is a
