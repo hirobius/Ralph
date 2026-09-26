@@ -7,7 +7,10 @@
 # both call it, so local and CI runs agree on "next".
 #
 # Candidates are vetted in order and parked (with a written reason) when:
-#   - the body has no acceptance-criteria/DoD marker → parked to needs-adrian
+#   - the body has no acceptance-criteria/DoD marker → a drafted DoD checklist
+#     is posted as a comment (marker `ralph-dod-draft:`, never edits the body),
+#     then parked to needs-adrian as a draft-awaiting-review, not a rejection
+#     (ops#296)
 #   - a ralph PR merged/closed AFTER the latest ralph-ready labeling exists
 #     (last cycle already ended in a merge or a human rejection, yet the
 #     issue is still open+queued)                     → parked to needs-adrian
@@ -82,10 +85,11 @@ for n in $ordered; do
 
   body=$(jq -r --argjson n "$n" '.[] | select(.number == $n) | .body // ""' <<<"$issues")
   if ! has_dod_marker "$body"; then
-    echo "ralph: #$n has no acceptance-criteria/DoD marker — parking" >&2
+    echo "ralph: #$n has no acceptance-criteria/DoD marker — drafting a DoD checklist instead of a bare park (ops#296)" >&2
     # >&2: this script's stdout is ONLY the selected issue number; park side
     # effects must never leak into it (callers capture it).
-    park_issue "$n" "no acceptance criteria found in the body (looked for a \`- [ ]\` checklist or an acceptance / DoD / definition-of-done section). Add one, then re-add \`$RALPH_READY_LABEL\`." needs-adrian >&2
+    post_dod_draft "$n" "$body" >&2
+    park_issue "$n" "no acceptance criteria found in the body (looked for a \`- [ ]\` checklist or an acceptance / DoD / definition-of-done section). Drafted one above (see the \`ralph-dod-draft:\` comment) — it's a draft awaiting your thumbs-up, not a rejection. Review it (edit into the body, or accept as-is), then re-add \`$RALPH_READY_LABEL\`." needs-adrian >&2
     continue
   fi
 

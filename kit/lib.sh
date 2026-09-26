@@ -36,6 +36,7 @@ fi
 : "${RALPH_DEFAULT_AUTO_MERGE:=false}" # ralph#26: opt-in default-on arming; NEVER flip the fleet-wide default here — per-repo config.env only
 : "${RALPH_WEDGE_GRACE_MIN:=10}"     # ralph#16: minutes to wait for a ralph-gate run to appear/post before calling it dead
 : "${RALPH_CLAIM_DEDUPE_SECS:=60}"   # ralph#17: a ralph-claim posted more recently than this = the double-claim race, not a distinct trigger
+: "${RALPH_DOD_DRAFT_CMD:=}"         # ops#296: command drafting a DoD checklist from the issue body on stdin (a haiku-model call); empty = heuristic fallback, no workflow wiring required
 
 repo_slug() {
   # CI first: $GITHUB_REPOSITORY is the runner's canonical slug. The checkout's
@@ -565,6 +566,63 @@ $tail
     fi
   fi
   echo "$note"
+}
+
+# --------------------------------------------------------- DoD draft (ops#296)
+#
+# Frontier-doctrine decision (ops#274 / ops#296, Adrian 2026-09-26): a missing
+# DoD checklist is a context gap, not a rejection. Instead of parking bare,
+# next.sh drafts a checklist and posts it as a COMMENT — never into the issue
+# body, so it can never overwrite anything a human wrote — then parks to
+# needs-adrian as before so nothing auto-proceeds. A human reviews, folds it
+# into the body (edited or as-is), and re-adds ralph-ready.
+
+# heuristic_dod_draft <body> — zero-dependency fallback: pulls any existing
+# "- " bullets out of the body (Proposal/plan lines often already state the
+# acceptance shape) and always adds a generic pair so the draft is never
+# empty. Deliberately dumb — it exists so the feature works with no engine
+# wiring at all; draft_dod_checklist prefers a real model when configured.
+heuristic_dod_draft() {
+  local body=$1 bullets
+  bullets=$(grep -E '^[[:space:]]*[-*][[:space:]]+\S' <<<"$body" | sed -E 's/^[[:space:]]*[-*][[:space:]]+/- [ ] /' | head -n 8)
+  {
+    echo "- [ ] TODO (drafted, unreviewed): confirm the concrete outcome this issue delivers"
+    [ -n "$bullets" ] && printf '%s\n' "$bullets"
+    echo "- [ ] TODO (drafted, unreviewed): confirm how success will be verified (test, manual check, etc.)"
+  }
+}
+
+# draft_dod_checklist <body> — echoes checklist markdown, prefixed with the
+# `ralph-dod-draft:` marker line a human (or a future re-check) can grep for.
+# RALPH_DOD_DRAFT_CMD, if set, is a command that receives the issue body on
+# stdin and prints checklist markdown on stdout (e.g. a `claude --model
+# haiku...` one-liner, per the ops#296 dispatch-rules pick of the cheap tier
+# for non-architectural drafting) — that wiring is a workflow-level change
+# (new step/secret in ralph-run-reusable.yml) and is NOT implemented here; see
+# the repo README / issue for the exact patch. Unset, or the command producing
+# nothing, falls back to the heuristic so this never blocks on missing wiring.
+draft_dod_checklist() {
+  local body=$1 draft=""
+  if [ -n "$RALPH_DOD_DRAFT_CMD" ]; then
+    draft=$(printf '%s' "$body" | eval "$RALPH_DOD_DRAFT_CMD" 2>/dev/null || true)
+  fi
+  if [ -z "$(tr -d '[:space:]' <<<"$draft")" ]; then
+    draft=$(heuristic_dod_draft "$body")
+  fi
+  printf 'ralph-dod-draft:\n%s' "$draft"
+}
+
+# post_dod_draft <n> <body> — the comment side-effect; never touches the issue
+# body. Best-effort like park_issue's own comment: a failure here must not
+# crash the candidate walk in next.sh.
+post_dod_draft() {
+  local n=$1 body=$2 draft
+  if [ "$RALPH_DRY_RUN" = "1" ]; then
+    echo "ralph[dry-run]: would post a ralph-dod-draft: comment on #$n" >&2
+    return 0
+  fi
+  draft=$(draft_dod_checklist "$body")
+  gh_retry issue comment "$n" --body "$draft" >/dev/null || true
 }
 
 # park_issue <n> <reason> <label: ralph-parked|needs-adrian>
