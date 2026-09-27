@@ -144,6 +144,52 @@ ralph_diff_is_supervised() {
   return 1
 }
 
+# ralph_arm_reason <pr_ok> <issue_ok> — ralph#26. Pure decision fn for
+# whether to arm auto-merge and why. <pr_ok>/<issue_ok> are "true"/"false"
+# strings — the caller's existing checks for the approve label
+# ($RALPH_APPROVE_LABEL) on the PR and the auto-merge label
+# ($RALPH_AUTO_MERGE_LABEL) on the linked issue. Reads the diff's changed
+# paths on stdin, same contract as ralph_diff_is_supervised (one path per
+# line) — this is how the boundary from ralph#25 applies uniformly to
+# every arming reason, including the new default-posture one.
+#
+# THE BOUNDARY APPLIES TO ALL THREE REASONS, NOT JUST THE NEW ONE. A
+# supervised diff blocks arming even when the PR carries the approve label
+# or the issue is pre-tagged ralph-auto — ralph#26 must not weaken what
+# ralph#25 just enforced.
+#
+# FAIL CLOSED. ralph_diff_is_supervised already fails closed (an unreadable
+# RALPH_SUPERVISED_CMD reads as "the whole diff is supervised"); this
+# function inherits that by simply deferring to it, so a broken boundary
+# command blocks arming under every value of every flag/label.
+#
+# Prints exactly one of `ralph-approved` | `issue ralph-auto` |
+# `default posture` to stdout and returns 0 when arming is authorized (in
+# that priority order — an explicit approve label or issue tag always wins
+# over the caller's default posture); prints nothing and returns 1 when
+# the diff is supervised, the boundary command failed, or none of
+# pr_ok/issue_ok/RALPH_DEFAULT_AUTO_MERGE authorize it.
+ralph_arm_reason() {
+  local pr_ok="${1:-false}" issue_ok="${2:-false}" paths
+  paths="$(cat)"
+  if printf '%s\n' "$paths" | ralph_diff_is_supervised >/dev/null; then
+    return 1
+  fi
+  if [ "$pr_ok" = "true" ]; then
+    echo "ralph-approved"
+    return 0
+  fi
+  if [ "$issue_ok" = "true" ]; then
+    echo "issue ralph-auto"
+    return 0
+  fi
+  if [ "${RALPH_DEFAULT_AUTO_MERGE:-false}" = "true" ]; then
+    echo "default posture"
+    return 0
+  fi
+  return 1
+}
+
 notify_discord() {
   if [ -z "${DISCORD_WEBHOOK_URL:-}" ]; then
     echo "ralph: (no DISCORD_WEBHOOK_URL — not pinging) $*" >&2
