@@ -213,6 +213,39 @@ out=$(run_reconcile)
 assert_contains "$out" "failed:" "stale sentinel does not suppress the failure"
 assert_no_mutation "--add-label needs-adrian" "no hand-off on a stale sentinel"
 
+# ── 8b. ops#370 item 2 / the #103 shape: branch pushed, `gh pr create` fails
+#       3x (auth/network?), the model's own `ralph-blocked` comment says the
+#       work already shipped in a merged PR — the park comment must quote the
+#       agent's own words as the reason, not invent a harness diagnosis that
+#       contradicts it. #103's actual park said "branch pushed but PR creation
+#       failed after 3 attempts (auth/network?)" while the agent had already
+#       correctly reported the work was done. The harness's own guess is still
+#       recorded, but only as a clearly-labelled secondary note. ─────────────
+new_case blocked_reason_quoted_verbatim_103_shape
+std_claim_comment
+std_state_queued
+std_ready_labeled
+fixture pr_list_all.json <<'JSON'
+[{"number": 192, "headRefName": "ralph/issue-126-older-attempt", "state": "MERGED",
+  "createdAt": "2026-07-01T00:00:00Z"}]
+JSON
+printf 'deadbeef\trefs/heads/ralph/issue-126-fresh\n' >"$GH_FIX_DIR/git_ls_heads.txt"
+export GH_FAIL_PATTERNS='pr create'
+fixture issue_view_comments_126.json <<'JSON'
+{"comments": [{"body": "ralph-blocked: already shipped in PR #192",
+               "createdAt": "2026-07-12T10:05:00Z"}]}
+JSON
+out=$(run_reconcile)
+assert_contains "$out" "parked:" "still parks to needs-adrian"
+assert_mutation "--add-label needs-adrian" "parked to needs-adrian"
+assert_mutation "already shipped in PR #192" "park comment quotes the agent's own reason verbatim"
+assert_mutation "harness note:" "harness diagnosis is present but demoted to a labelled secondary line"
+assert_no_mutation "ralph-attempt-failed" "blocked-stop still burns no attempt"
+mut_log_contents=$(cat "$GH_MUT_LOG")
+before_harness_note=${mut_log_contents%%harness note:*}
+assert_contains "$before_harness_note" "already shipped in PR #192" \
+  "the agent's own reason precedes the harness note, never the other way round"
+
 # ── 9. Eligibility check API-dead → conservative attempt, NOT a false
 #      deliberate stop (empty jq output must read as "queued") ────────────────
 new_case state_api_dead_records_attempt

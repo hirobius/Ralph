@@ -37,6 +37,7 @@ fi
 : "${RALPH_WEDGE_GRACE_MIN:=10}"     # ralph#16: minutes to wait for a ralph-gate run to appear/post before calling it dead
 : "${RALPH_CLAIM_DEDUPE_SECS:=60}"   # ralph#17: a ralph-claim posted more recently than this = the double-claim race, not a distinct trigger
 : "${RALPH_DOD_DRAFT_CMD:=}"         # ops#296: command drafting a DoD checklist from the issue body on stdin (a haiku-model call); empty = heuristic fallback, no workflow wiring required
+: "${RALPH_BLOCKED_REASON_MAX_CHARS:=1200}" # ops#370 item 2: cap on the quoted `ralph-blocked` body in a park comment
 
 repo_slug() {
   # CI first: $GITHUB_REPOSITORY is the runner's canonical slug. The checkout's
@@ -488,6 +489,41 @@ model_signalled_blocked() {
   [ "${count:-0}" -gt 0 ]
 }
 
+# model_blocked_reason <n> — the newest `ralph-blocked` comment's own BODY this
+# cycle, same gating (latest_ready_label_at) as model_signalled_blocked, so it
+# only ever quotes the sentinel that just made model_signalled_blocked true —
+# never a stale one from before the last re-queue.
+#
+# WHY THIS EXISTS. ops#370 item 2 (ops#103): the agent's own comment correctly
+# said the work had already shipped in merged PR #192, but the park comment
+# substituted a fabricated harness diagnosis — "branch pushed but PR creation
+# failed after 3 attempts (auth/network?)" — that contradicted it outright. A
+# park record that misreports corrupts the corpus #298 harvests into
+# docs/ai/learned-rules.jsonl: a wrong park teaches a wrong rule. Quoting the
+# model's own words verbatim in reconcile_issue step 4 makes that
+# misattribution impossible — the harness's guess becomes a clearly-labelled
+# secondary note, never the headline reason.
+#
+# Truncated (RALPH_BLOCKED_REASON_MAX_CHARS) and blockquoted for embedding in
+# a GitHub comment body. Prints nothing (never "unknown") on any failure or
+# absence — callers fall back to the harness's own reason alone, exactly
+# today's behaviour.
+model_blocked_reason() {
+  local n=$1 since body
+  since=$(latest_ready_label_at "$n")
+  [ "$since" = "unknown" ] && return 0
+  body=$(gh issue view "$n" --json comments 2>/dev/null |
+    jq -r --arg since "${since:-1970-01-01T00:00:00Z}" \
+      '[.comments[] | select((.body | ascii_downcase | startswith("ralph-blocked")) and (.createdAt > $since))]
+       | (last.body // empty)' \
+      2>/dev/null) || return 0
+  [ -z "$body" ] && return 0
+  if [ "${#body}" -gt "$RALPH_BLOCKED_REASON_MAX_CHARS" ]; then
+    body="${body:0:$RALPH_BLOCKED_REASON_MAX_CHARS}"$'\n…(truncated)'
+  fi
+  echo "> ${body//$'\n'/$'\n'> }"
+}
+
 # Did the MODEL leave a substantive comment of its own this cycle?
 #
 # This is the fallback behind model_signalled_blocked. ops#303: "A load-bearing
@@ -853,7 +889,22 @@ This branch was chosen because its head commit is the newest. If the work you wa
   #    labels). Route to needs-adrian without counting an attempt — the exact
   #    class that reddened the run and halted the chain in site-engine#86.
   if model_signalled_blocked "$n"; then
-    park_issue "$n" "the model signalled it is blocked on a human decision (\`ralph-blocked\`) and stopped without a PR — $why" needs-adrian
+    # ops#370 item 2: quote the model's own `ralph-blocked` body FIRST — it is
+    # the primary reason. The harness's own guess ($why, e.g. "PR creation
+    # failed after 3 attempts") is demoted to a labelled secondary line so it
+    # can never again stand in for, or contradict, what the agent actually
+    # said (the ops#103 shape).
+    local blocked_reason
+    blocked_reason=$(model_blocked_reason "$n")
+    if [ -n "$blocked_reason" ]; then
+      park_issue "$n" "the model signalled it is blocked on a human decision (\`ralph-blocked\`) — its own comment:
+
+$blocked_reason
+
+(harness note: $why)" needs-adrian
+    else
+      park_issue "$n" "the model signalled it is blocked on a human decision (\`ralph-blocked\`) and stopped without a PR — $why" needs-adrian
+    fi
     release_claim "$n"
     echo "parked:#$n — model signalled \`ralph-blocked\` (routed to needs-adrian), no attempt recorded"
     return 0
