@@ -80,6 +80,42 @@ gh_retry() {
   return 1
 }
 
+# ------------------------------------------------------ frontier selection
+
+# blocked_by_refs — ops#474. Reads an issue body on stdin; prints the same-repo
+# `#N` refs listed under a `## Blocked by` heading (up to the next heading),
+# one per line, deduped. A missing section, or one whose first line starts with
+# "None", means no blockers (prints nothing). Cross-repo refs (owner/repo#N)
+# are ignored: only same-repo blockers can be checked.
+blocked_by_refs() {
+  awk '
+    { l = tolower($0) }
+    l ~ /^#+[ \t]+blocked by[ \t]*$/ { inside = 1; first = 1; next }
+    /^#+[ \t]/ { inside = 0 }
+    inside {
+      if (first && $0 ~ /^[ \t]*$/) next
+      if (first && l ~ /^[ \t]*none/) { inside = 0; next }
+      first = 0
+      print
+    }' | grep -oE '(^|[^A-Za-z0-9_/.-])#[0-9]+' | grep -oE '[0-9]+' | sort -un || true
+}
+
+# open_blocker <body> — prints the first blocker number that is still OPEN and
+# returns 0; returns 1 when none is open; returns 2 (printing the number) when
+# a blocker's state cannot be read — callers fail closed (skip, never park).
+open_blocker() {
+  local b state
+  for b in $(blocked_by_refs <<<"$1"); do
+    state=$(gh_retry issue view "$b" --json state --jq .state 2>/dev/null) || { echo "$b"; return 2; }
+    if [ "$state" != "CLOSED" ]; then
+      echo "$b"
+      [ "$state" = "OPEN" ] && return 0
+      return 2
+    fi
+  done
+  return 1
+}
+
 # --------------------------------------------------------- supervised paths
 
 # ralph_diff_is_supervised — ralph#25. Reads the changed file paths for a
@@ -847,10 +883,12 @@ reconcile_issue() {
       echo "pr:dry-run"
       return 0
     fi
+    commits=$(git log --format=%s "origin/$(default_branch)..origin/$branch" 2>/dev/null || true)
+    gate_tail=$(tail -n 20 "ralph/logs/${run_id}-issue-${n}.log" 2>/dev/null || true)
     for i in 1 2 3; do
       if gh pr create --head "$branch" --base "$(default_branch)" \
         --title "$(git log -1 --format=%s "origin/$branch" 2>/dev/null || echo "ralph: issue #$n")" \
-        --body "Closes #$n
+        --body "$(recovery_pr_body "$n" "$commits" "$gate_tail")
 
 Opened by ralph reconciliation (run \`$run_id\`): the iteration pushed this branch but its PR step failed.${passed_over:+
 
@@ -995,6 +1033,23 @@ prune_merged_ralph_branches() {
     esac
   done < <(git for-each-ref --format='%(refname:short)' refs/heads/ralph/ |
     grep -v '^ralph/claim-' || true)
+}
+
+# recovery_pr_body <n> <commit-subjects (newline-separated)> <gate-tail>
+# Pure: the recovery PR body in the fleet /pr shape (ops#475). The FIRST line is
+# the bare `Closes #<n>` (see prompt.md step 5), then Summary · Evidence ·
+# Merge Danger. An empty gate tail says so rather than leaving a blank fence.
+recovery_pr_body() {
+  local n=$1 commits=${2:-} gate=${3:-} list
+  list=$(sed -e '/^[[:space:]]*$/d' -e 's/^/- /' <<<"$commits")
+  [ -n "$list" ] || list="- (commit subjects unavailable)"
+  printf 'Closes #%s\n\n## Summary\n\n%s\n\n## Evidence\n\n' "$n" "$list"
+  if [ -n "${gate//[[:space:]]/}" ]; then
+    printf '```\n%s\n```\n' "$gate"
+  else
+    printf 'gate output unavailable\n'
+  fi
+  printf '\n## Merge Danger\n\n**Door:** two-way\n**Blast Radius:** see diff\n'
 }
 
 # Executed directly (`bash ralph/lib.sh <fn> [args]`) → dispatch one helper,
