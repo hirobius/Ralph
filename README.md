@@ -26,8 +26,18 @@ NAME only — actual secrets live in each caller repo / the org.
   `needs-adrian` for direction, not a retry; anything else → record a failed
   attempt, park on the cap. `next.sh` applies the same PR-history guard at
   selection time, so the looping class never even costs a model iteration.
+- **Frontier selection** (ops#474): `next.sh` skips a `ralph-ready` issue while
+  any same-repo `#N` listed under its `## Blocked by` heading (any `#` level,
+  optional colon, CRLF tolerated) is still open (logged to stderr; no park, no
+  attempt burned). CLOSED and MERGED blockers are done. A missing section or
+  "None…" means no blockers; a blocker that is missing or whose state can't be
+  read fails closed (skip, reason logged). The check runs after the claim and
+  open-PR guards, with blocker states cached per run.
+- **Parked PRs** (ops#476): an open Ralph PR labelled `needs-adrian` is parked
+  on a human — it does not hold single-flight (run.sh exit 13), and
+  `next.sh` never re-picks the issue that owns it.
 - `tests/` — decision-table tests for the kit (`reconcile.test.sh` +
-  `next.test.sh` + `attempts.test.sh` + `blocked-inference.test.sh` + `closure-verify.test.sh`, `gh`/`git` stubbed, no network; the #86 stall and #126
+  `next.test.sh` + `parked-prs.test.sh` + `attempts.test.sh` + `blocked-inference.test.sh` + `closure-verify.test.sh`, `gh`/`git` stubbed, no network; the #86 stall and #126
   restart loop are both locked cases) run via `.github/workflows/test.yml`
   with shellcheck. Extend `tests/*.test.sh` whenever reconcile/selection
   semantics change.

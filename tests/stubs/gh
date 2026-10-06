@@ -6,6 +6,7 @@
 #   GH_MUT_LOG        file every mutating call is appended to (one argv line)
 #   GH_FAIL_PATTERNS  newline-separated extended regexes; an argv line matching
 #                     one exits 1 (injects an API failure for that call)
+#   GH_FAIL_MSG       optional stderr text for an injected failure
 #
 # Reads honor `--jq <expr>` by piping the fixture through real jq, mirroring
 # gh's behavior closely enough for the expressions the kit uses. A read whose
@@ -15,11 +16,14 @@ set -uo pipefail
 
 argv="$*"
 
+# optional: log EVERY call (reads too) so tests can count lookups
+[ -n "${GH_CALL_LOG:-}" ] && echo "gh $argv" >>"$GH_CALL_LOG"
+
 if [ -n "${GH_FAIL_PATTERNS:-}" ]; then
   while IFS= read -r pat; do
     [ -z "$pat" ] && continue
     if grep -qE -- "$pat" <<<"$argv"; then
-      echo "stub-gh: injected failure for: gh $argv" >&2
+      echo "stub-gh: ${GH_FAIL_MSG:-injected failure} for: gh $argv" >&2
       exit 1
     fi
   done <<<"$GH_FAIL_PATTERNS"

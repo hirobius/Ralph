@@ -20,6 +20,8 @@
 # Issues labeled blocked / needs-adrian / ralph-parked, or holding a fresh
 # claim (refs/heads/ralph/claim-<n>), are skipped — as is any candidate whose
 # history/budget cannot be verified (API failure fails closed: skip, no park).
+# Candidates with an OPEN ticket under their `## Blocked by` heading are skipped
+# too (ops#474; no park, no attempt burned; unreadable blocker fails closed).
 # Stale claims (older than RALPH_CLAIM_TTL, no open PR) do NOT block
 # selection — run.sh reclaims them.
 #
@@ -58,8 +60,10 @@ issues=$(gh_retry issue list --label "$RALPH_READY_LABEL" --state open \
 
 # One prefetch of every non-open ralph/issue-* PR — the history guard in the
 # candidate walk needs it, and fetching once keeps the walk O(1) API calls.
-history=$(gh_retry pr list --state all --limit 200 --json headRefName,state,mergedAt,closedAt \
-  --jq '[.[] | select(.headRefName | startswith("ralph/issue-")) | select(.state != "OPEN")]') || exit 20
+all_prs=$(gh_retry pr list --state all --limit 200 --json headRefName,state,mergedAt,closedAt \
+  --jq '[.[] | select(.headRefName | startswith("ralph/issue-"))]') || exit 20
+history=$(jq '[.[] | select(.state != "OPEN")]' <<<"$all_prs")
+open_prs=$(jq '[.[] | select(.state == "OPEN")]' <<<"$all_prs")
 
 ordered=$(jq -r '
   def prio: [.labels[].name | select(test("^p[0-3]$"))] | sort | (first // "p9")
@@ -75,7 +79,15 @@ has_dod_marker() {
   grep -qiE -- '- \[ \]|acceptance|definition of done|\bDoD\b' <<<"$1"
 }
 
+# Per-run cache of blocker states: a blocker shared by several candidates is
+# looked up once (open_blocker runs in a subshell, so the cache is a directory).
+RALPH_BLOCKER_CACHE=$(mktemp -d)
+export RALPH_BLOCKER_CACHE
+trap 'rm -rf "$RALPH_BLOCKER_CACHE"' EXIT
+
 for n in $ordered; do
+  body=$(jq -r --argjson n "$n" '.[] | select(.number == $n) | .body // ""' <<<"$issues")
+
   # Freshly claimed by another runner → theirs, move on. Stale → offer it;
   # run.sh's claim step deletes the stale ref atomically before re-claiming.
   if claim_ref_exists "$n" && ! claim_is_stale "$n"; then
@@ -83,7 +95,29 @@ for n in $ordered; do
     continue
   fi
 
-  body=$(jq -r --argjson n "$n" '.[] | select(.number == $n) | .body // ""' <<<"$issues")
+  # ops#302/#476: an issue that already owns an OPEN Ralph PR (active, or
+  # parked on needs-adrian) is never re-picked — even while it still carries
+  # the ready label. Otherwise a parked PR would be duplicated by a fresh run.
+  if jq -e --arg p "ralph/issue-$n-" 'any(.[]; .headRefName | startswith($p))' <<<"$open_prs" >/dev/null; then
+    echo "ralph: #$n already owns an open Ralph PR (in flight or parked) — skipping" >&2
+    continue
+  fi
+
+  # Frontier selection (ops#474): a candidate whose `## Blocked by` tickets are
+  # not all done (CLOSED/MERGED) is skipped — no park, no attempt burned, stdout
+  # untouched. An unreadable or missing blocker fails closed (skip, never park;
+  # open_blocker logs the reason). Runs AFTER the free guards above so it costs
+  # nothing for candidates already skipped, and BEFORE the DoD draft so a
+  # blocked issue is never drafted or parked while it waits.
+  blocker=$(open_blocker "$body" "$n") && brc=0 || brc=$?
+  if [ "$brc" -eq 0 ]; then
+    echo "ralph: #$n blocked by #$blocker (open) — skipping" >&2
+    continue
+  elif [ "$brc" -eq 2 ]; then
+    echo "ralph: #$n blocker #$blocker is not readable/usable — skipping (fail-closed)" >&2
+    continue
+  fi
+
   if ! has_dod_marker "$body"; then
     echo "ralph: #$n has no acceptance-criteria/DoD marker — drafting a DoD checklist instead of a bare park (ops#296)" >&2
     # >&2: this script's stdout is ONLY the selected issue number; park side

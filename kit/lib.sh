@@ -80,6 +80,76 @@ gh_retry() {
   return 1
 }
 
+# ------------------------------------------------------ frontier selection
+
+# blocked_by_refs — ops#474. Reads an issue body on stdin; prints the same-repo
+# `#N` refs listed under a `## Blocked by` heading (up to the next heading),
+# one per line, deduped. Tolerant of CRLF bodies, any heading level `#`..`######`
+# and an optional trailing colon (`### Blocked by:`) — a parser miss fails OPEN
+# (the ticket gets picked), so it must not be picky. A missing section, or one
+# whose first line starts with "None", means no blockers (prints nothing).
+# Cross-repo refs (owner/repo#N) are ignored: only same-repo blockers can be
+# checked.
+blocked_by_refs() {
+  tr -d '\r' | awk '
+    { l = tolower($0) }
+    l ~ /^#+[ \t]+blocked by:?[ \t]*$/ && match(l, /^#+/) && RLENGTH <= 6 { inside = 1; first = 1; next }
+    /^#+[ \t]/ { inside = 0 }
+    inside {
+      if (first && $0 ~ /^[ \t]*$/) next
+      if (first && l ~ /^[ \t]*none/) { inside = 0; next }
+      first = 0
+      print
+    }' | grep -oE '(^|[^A-Za-z0-9_/.-])#[0-9]+' | grep -oE '[0-9]+' | sort -un || true
+}
+
+# blocker_state <n> <for-issue> — prints OPEN|CLOSED|MERGED|... or returns 1 when
+# unreadable (the reason is logged to stderr). Looked up once per run: results,
+# failures included, are cached under $RALPH_BLOCKER_CACHE (a directory the
+# caller creates; without it every call goes to the API).
+blocker_state() {
+  local b=$1 for=$2 f="" state err
+  [ -n "${RALPH_BLOCKER_CACHE:-}" ] && f="$RALPH_BLOCKER_CACHE/$b"
+  if [ -n "$f" ] && [ -f "$f" ]; then
+    state=$(cat "$f")
+  else
+    err=$(mktemp)
+    if state=$(gh_retry issue view "$b" --json state --jq .state 2>"$err"); then
+      :
+    elif grep -qiE 'could not resolve|not found|no issue|is a pull request|404' "$err"; then
+      state="NOTFOUND"
+    else
+      state="UNREADABLE"
+    fi
+    cat "$err" >&2
+    rm -f "$err"
+    [ -n "$f" ] && printf '%s\n' "$state" >"$f"
+  fi
+  case $state in
+    NOTFOUND) echo "ralph: #$for blocker #$b not found — fix the Blocked by list" >&2; return 1 ;;
+    UNREADABLE) echo "ralph: #$for blocker #$b unreadable (API failure) — will retry next run" >&2; return 1 ;;
+  esac
+  echo "$state"
+}
+
+# open_blocker <body> [for-issue] — prints the first blocker number that is
+# still not done and returns 0 when it is OPEN; returns 1 when none is open;
+# returns 2 (printing the number) when a blocker's state cannot be read or is
+# not a done/open state — callers fail closed (skip, never park). CLOSED and
+# MERGED both count as done.
+open_blocker() {
+  local b state
+  for b in $(blocked_by_refs <<<"$1"); do
+    state=$(blocker_state "$b" "${2:-?}") || { echo "$b"; return 2; }
+    case $state in
+      CLOSED | MERGED) ;;
+      OPEN) echo "$b"; return 0 ;;
+      *) echo "$b"; return 2 ;;
+    esac
+  done
+  return 1
+}
+
 # --------------------------------------------------------- supervised paths
 
 # ralph_diff_is_supervised — ralph#25. Reads the changed file paths for a
@@ -218,10 +288,25 @@ audit() {
 
 # ---------------------------------------------------------------- PR health
 
+# ops#476: a Ralph PR labelled needs-adrian is PARKED on a human (supervised
+# path, design question) — it does not count as in-flight, so it never trips
+# single-flight (run.sh exit 13). Any other open Ralph PR is ACTIVE and does,
+# keeping at most one active PR per repo. Claim refs are never PRs.
+RALPH_OPEN_PRS_FIELDS="number,headRefName,headRefOid,updatedAt,labels"
+_ralph_pr_base='[.[] | select(.headRefName | startswith("ralph/")) |
+  select(.headRefName | startswith("ralph/claim-") | not)'
+_ralph_parked_test='((.labels // []) | map(.name) | index("needs-adrian")) != null'
+RALPH_ACTIVE_PRS_JQ="$_ralph_pr_base | select($_ralph_parked_test | not)]"
+RALPH_PARKED_PRS_JQ="$_ralph_pr_base | select($_ralph_parked_test)]"
+
+# open_ralph_prs — ACTIVE (non-parked) open Ralph PRs; what the wedge check
+# and single-flight consume. parked_ralph_prs — the needs-adrian ones.
 open_ralph_prs() {
-  gh pr list --state open --json number,headRefName,headRefOid,updatedAt \
-    --jq '[.[] | select(.headRefName | startswith("ralph/")) |
-           select(.headRefName | startswith("ralph/claim-") | not)]'
+  gh pr list --state open --json "$RALPH_OPEN_PRS_FIELDS" --jq "$RALPH_ACTIVE_PRS_JQ"
+}
+
+parked_ralph_prs() {
+  gh pr list --state open --json "$RALPH_OPEN_PRS_FIELDS" --jq "$RALPH_PARKED_PRS_JQ"
 }
 
 # classify_wedged  (stdin: open_ralph_prs JSON)
@@ -777,13 +862,36 @@ newest_branch() {
   echo "$best"
 }
 
-# reconcile_issue <n> <run_id> <work_status>
+# recovery_pr_body <n> <commit-subjects (newline-separated)> <gate-tail> <footer>
+# Pure: the recovery PR body in the fleet /pr shape (ops#475). The FIRST line is
+# the bare `Closes #<n>` (see prompt.md step 5), then Summary · Evidence ·
+# Merge Danger, then a `---` rule and the footer. The gate tail goes in a ~~~
+# fence with any line that could open/close a fence neutralised (indented 4
+# spaces); an empty tail says so. The Door is NOT asserted — a recovered branch
+# has not been judged one-way or two-way.
+recovery_pr_body() {
+  local n=$1 commits=${2:-} gate=${3:-} footer=${4:-} list
+  list=$(sed -e '/^[[:space:]]*$/d' -e 's/^/- /' <<<"$commits")
+  [ -n "$list" ] || list="- (commit subjects unavailable)"
+  printf 'Closes #%s\n\n## Summary\n\n%s\n\n## Evidence\n\n' "$n" "$list"
+  if [ -n "${gate//[[:space:]]/}" ]; then
+    printf '~~~\n%s\n~~~\n' "$(sed -E 's/^[[:space:]]*(```|~~~)/    &/' <<<"$gate")"
+  else
+    printf 'gate output unavailable\n'
+  fi
+  printf '\n## Merge Danger\n\n**Door:** unknown, check the diff (recovered branch)\n**Blast Radius:** see diff\n'
+  [ -z "$footer" ] || printf '\n---\n\n%s\n' "$footer"
+}
+
+# reconcile_issue <n> <run_id> <work_status> [log_path]
+# log_path: the run transcript (run.sh's $LOGFILE) — its tail is the gate evidence
+# in a recovered PR body; the log-name format lives only in run.sh.
 # State-based post-iteration reconciliation — the single place that decides
 # what actually happened, regardless of how the work step died. Prints one
 # token: pr:<num> | parked:<why> | failed:<why>. Never returns non-zero.
 reconcile_issue() {
-  local n=$1 run_id=$2 work_status=$3 all since pr closed branch i fails why eligible
-  local candidates cand_count passed_over
+  local n=$1 run_id=$2 work_status=$3 log_path=${4:-} all since pr closed branch i fails why eligible
+  local candidates cand_count passed_over commits gate_tail footer
   all=$(gh pr list --state all --limit 200 --json number,headRefName,state,createdAt \
     --jq "[.[] | select(.headRefName | startswith(\"ralph/issue-$n-\"))]" \
     2>/dev/null || echo '[]')
@@ -832,16 +940,18 @@ reconcile_issue() {
       echo "pr:dry-run"
       return 0
     fi
-    for i in 1 2 3; do
-      if gh pr create --head "$branch" --base "$(default_branch)" \
-        --title "$(git log -1 --format=%s "origin/$branch" 2>/dev/null || echo "ralph: issue #$n")" \
-        --body "Closes #$n
-
-Opened by ralph reconciliation (run \`$run_id\`): the iteration pushed this branch but its PR step failed.${passed_over:+
+    commits=$(git log --format=%s "origin/$(default_branch)..origin/$branch" 2>/dev/null || true)
+    gate_tail=""
+    [ -z "$log_path" ] || gate_tail=$(tail -n 20 "$log_path" 2>/dev/null || true)
+    footer="Opened by ralph reconciliation (run \`$run_id\`): the iteration pushed this branch but its PR step failed.${passed_over:+
 
 **Other branches exist for this issue and were passed over:** $passed_over
 
-This branch was chosen because its head commit is the newest. If the work you wanted is on one of the others, open it by hand — nothing deletes them.}" \
+This branch was chosen because its head commit is the newest. If the work you wanted is on one of the others, open it by hand — nothing deletes them.}"
+    for i in 1 2 3; do
+      if gh pr create --head "$branch" --base "$(default_branch)" \
+        --title "$(git log -1 --format=%s "origin/$branch" 2>/dev/null || echo "ralph: issue #$n")" \
+        --body "$(recovery_pr_body "$n" "$commits" "$gate_tail" "$footer")" \
         >/dev/null 2>&1; then
         release_claim "$n"
         echo "pr:recovered"

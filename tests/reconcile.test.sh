@@ -106,6 +106,44 @@ out=$(run_reconcile)
 assert_eq "pr:recovered" "$out" "orphan branch recovered into a PR"
 assert_mutation "pr create" "PR was opened by reconciliation"
 
+# ── 5a. Recovery PR body: bare Closes line first + /pr sections (ops#475) ────
+new_case recovery_body
+body=$(bash "$CASE/ralph/lib.sh" recovery_pr_body 126 $'fix: a\nfeat: b' $'ok 1\nall green' "Opened by ralph reconciliation (run \`r1\`).")
+assert_eq "Closes #126" "$(head -n1 <<<"$body")" "first line is exactly the bare Closes line"
+assert_contains "$body" "## Summary" "Summary heading"
+assert_contains "$body" "## Evidence" "Evidence heading"
+assert_contains "$body" "## Merge Danger" "Merge Danger heading"
+assert_contains "$body" "- fix: a" "commit subjects listed"
+assert_contains "$body" "all green" "gate tail included"
+assert_contains "$body" "**Door:** unknown, check the diff (recovered branch)" "door asserts no fact"
+assert_eq "" "$(grep -F 'two-way' <<<"$body")" "no two-way claim"
+assert_contains "$body" "**Blast Radius:** see diff" "blast radius line"
+assert_contains "$body" $'~~~\nok 1\nall green\n~~~' "gate tail in a ~~~ fence"
+# footer sits under its own --- rule AFTER Merge Danger, not inside it
+md_line=$(grep -n '^## Merge Danger' <<<"$body" | cut -d: -f1)
+rule_line=$(grep -n '^---$' <<<"$body" | tail -n1 | cut -d: -f1)
+foot_line=$(grep -n 'Opened by ralph reconciliation' <<<"$body" | cut -d: -f1)
+assert_eq "1" "$([ "$rule_line" -gt "$md_line" ] && [ "$foot_line" -gt "$rule_line" ] && echo 1 || echo 0)" "footer under its own --- rule after Merge Danger"
+assert_eq "$((rule_line + 2))" "$foot_line" "footer follows the rule after one blank line"
+empty=$(bash "$CASE/ralph/lib.sh" recovery_pr_body 7 "" "" "")
+assert_contains "$empty" "gate output unavailable" "empty gate tail handled"
+assert_eq "Closes #7" "$(head -n1 <<<"$empty")" "bare Closes line with empty inputs"
+fenced=$(bash "$CASE/ralph/lib.sh" recovery_pr_body 7 "x" $'a\n```\n~~~ evil\n  ~~~\nb' "")
+assert_eq "2" "$(grep -c '^~~~' <<<"$fenced")" "only the opening and closing fences start with ~~~"
+assert_eq "" "$(grep -E '^ {0,3}```' <<<"$fenced")" "backtick fences in the log are neutralised"
+
+# 5a'. reconcile reads the gate tail from the log path the CALLER passes in
+new_case recovery_log_path
+std_claim_comment
+fixture pr_list_all.json <<'JSON'
+[]
+JSON
+printf 'deadbeef\trefs/heads/ralph/issue-126-fresh\n' >"$GH_FIX_DIR/git_ls_heads.txt"
+printf 'noise\nGATE-TAIL-MARKER\n' >"$CASE/custom.log"
+out=$(cd "$CASE" && bash ralph/lib.sh reconcile_issue 126 run-1 "claude exit 0" "$CASE/custom.log" 2>>stderr.log)
+assert_eq "pr:recovered" "$out" "recovered with caller-supplied log path"
+assert_mutation "GATE-TAIL-MARKER" "gate tail came from the passed-in log path"
+
 # ── 5b. Two orphan branches for one issue → recover the NEWEST commit, and say
 #       which branch was passed over (ralph#18). `older` sorts first in
 #       ls-remote's alphabetical order, so head -n1 would have picked it.
