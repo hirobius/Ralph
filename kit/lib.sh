@@ -218,10 +218,25 @@ audit() {
 
 # ---------------------------------------------------------------- PR health
 
+# ops#476: a Ralph PR labelled needs-adrian is PARKED on a human (supervised
+# path, design question) — it does not count as in-flight, so it never trips
+# single-flight (run.sh exit 13). Any other open Ralph PR is ACTIVE and does,
+# keeping at most one active PR per repo. Claim refs are never PRs.
+RALPH_OPEN_PRS_FIELDS="number,headRefName,headRefOid,updatedAt,labels"
+_ralph_pr_base='[.[] | select(.headRefName | startswith("ralph/")) |
+  select(.headRefName | startswith("ralph/claim-") | not)'
+_ralph_parked_test='((.labels // []) | map(.name) | index("needs-adrian")) != null'
+RALPH_ACTIVE_PRS_JQ="$_ralph_pr_base | select($_ralph_parked_test | not)]"
+RALPH_PARKED_PRS_JQ="$_ralph_pr_base | select($_ralph_parked_test)]"
+
+# open_ralph_prs — ACTIVE (non-parked) open Ralph PRs; what the wedge check
+# and single-flight consume. parked_ralph_prs — the needs-adrian ones.
 open_ralph_prs() {
-  gh pr list --state open --json number,headRefName,headRefOid,updatedAt \
-    --jq '[.[] | select(.headRefName | startswith("ralph/")) |
-           select(.headRefName | startswith("ralph/claim-") | not)]'
+  gh pr list --state open --json "$RALPH_OPEN_PRS_FIELDS" --jq "$RALPH_ACTIVE_PRS_JQ"
+}
+
+parked_ralph_prs() {
+  gh pr list --state open --json "$RALPH_OPEN_PRS_FIELDS" --jq "$RALPH_PARKED_PRS_JQ"
 }
 
 # classify_wedged  (stdin: open_ralph_prs JSON)

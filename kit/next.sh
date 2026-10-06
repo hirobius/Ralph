@@ -58,8 +58,10 @@ issues=$(gh_retry issue list --label "$RALPH_READY_LABEL" --state open \
 
 # One prefetch of every non-open ralph/issue-* PR — the history guard in the
 # candidate walk needs it, and fetching once keeps the walk O(1) API calls.
-history=$(gh_retry pr list --state all --limit 200 --json headRefName,state,mergedAt,closedAt \
-  --jq '[.[] | select(.headRefName | startswith("ralph/issue-")) | select(.state != "OPEN")]') || exit 20
+all_prs=$(gh_retry pr list --state all --limit 200 --json headRefName,state,mergedAt,closedAt \
+  --jq '[.[] | select(.headRefName | startswith("ralph/issue-"))]') || exit 20
+history=$(jq '[.[] | select(.state != "OPEN")]' <<<"$all_prs")
+open_prs=$(jq '[.[] | select(.state == "OPEN")]' <<<"$all_prs")
 
 ordered=$(jq -r '
   def prio: [.labels[].name | select(test("^p[0-3]$"))] | sort | (first // "p9")
@@ -80,6 +82,14 @@ for n in $ordered; do
   # run.sh's claim step deletes the stale ref atomically before re-claiming.
   if claim_ref_exists "$n" && ! claim_is_stale "$n"; then
     echo "ralph: #$n is claimed (fresh) — skipping" >&2
+    continue
+  fi
+
+  # ops#302/#476: an issue that already owns an OPEN Ralph PR (active, or
+  # parked on needs-adrian) is never re-picked — even while it still carries
+  # the ready label. Otherwise a parked PR would be duplicated by a fresh run.
+  if jq -e --arg p "ralph/issue-$n-" 'any(.[]; .headRefName | startswith($p))' <<<"$open_prs" >/dev/null; then
+    echo "ralph: #$n already owns an open Ralph PR (in flight or parked) — skipping" >&2
     continue
   fi
 

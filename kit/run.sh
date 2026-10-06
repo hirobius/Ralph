@@ -73,8 +73,9 @@ if [ -z "${GITHUB_ACTIONS:-}" ]; then
 fi
 
 # ── 2. Single-flight + wedge check ──────────────────────────────────────────
-prs=$(gh_retry pr list --state open --json number,headRefName,headRefOid,updatedAt \
-  --jq '[.[] | select(.headRefName | startswith("ralph/")) | select(.headRefName | startswith("ralph/claim-") | not)]') ||
+# needs-adrian PRs are parked on a human and don't count (ops#476).
+prs=$(gh_retry pr list --state open --json "$RALPH_OPEN_PRS_FIELDS" \
+  --jq "$RALPH_ACTIVE_PRS_JQ") ||
   { EXIT_REASON="gh pr list failed after retries"; finish 20; }
 if [ "$(jq length <<<"$prs")" -gt 0 ]; then
   wedged=$(classify_wedged <<<"$prs")
