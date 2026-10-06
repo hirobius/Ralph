@@ -84,13 +84,16 @@ gh_retry() {
 
 # blocked_by_refs — ops#474. Reads an issue body on stdin; prints the same-repo
 # `#N` refs listed under a `## Blocked by` heading (up to the next heading),
-# one per line, deduped. A missing section, or one whose first line starts with
-# "None", means no blockers (prints nothing). Cross-repo refs (owner/repo#N)
-# are ignored: only same-repo blockers can be checked.
+# one per line, deduped. Tolerant of CRLF bodies, any heading level `#`..`######`
+# and an optional trailing colon (`### Blocked by:`) — a parser miss fails OPEN
+# (the ticket gets picked), so it must not be picky. A missing section, or one
+# whose first line starts with "None", means no blockers (prints nothing).
+# Cross-repo refs (owner/repo#N) are ignored: only same-repo blockers can be
+# checked.
 blocked_by_refs() {
-  awk '
+  tr -d '\r' | awk '
     { l = tolower($0) }
-    l ~ /^#+[ \t]+blocked by[ \t]*$/ { inside = 1; first = 1; next }
+    l ~ /^#+[ \t]+blocked by:?[ \t]*$/ && match(l, /^#+/) && RLENGTH <= 6 { inside = 1; first = 1; next }
     /^#+[ \t]/ { inside = 0 }
     inside {
       if (first && $0 ~ /^[ \t]*$/) next
@@ -100,18 +103,49 @@ blocked_by_refs() {
     }' | grep -oE '(^|[^A-Za-z0-9_/.-])#[0-9]+' | grep -oE '[0-9]+' | sort -un || true
 }
 
-# open_blocker <body> — prints the first blocker number that is still OPEN and
-# returns 0; returns 1 when none is open; returns 2 (printing the number) when
-# a blocker's state cannot be read — callers fail closed (skip, never park).
+# blocker_state <n> <for-issue> — prints OPEN|CLOSED|MERGED|... or returns 1 when
+# unreadable (the reason is logged to stderr). Looked up once per run: results,
+# failures included, are cached under $RALPH_BLOCKER_CACHE (a directory the
+# caller creates; without it every call goes to the API).
+blocker_state() {
+  local b=$1 for=$2 f="" state err
+  [ -n "${RALPH_BLOCKER_CACHE:-}" ] && f="$RALPH_BLOCKER_CACHE/$b"
+  if [ -n "$f" ] && [ -f "$f" ]; then
+    state=$(cat "$f")
+  else
+    err=$(mktemp)
+    if state=$(gh_retry issue view "$b" --json state --jq .state 2>"$err"); then
+      :
+    elif grep -qiE 'could not resolve|not found|no issue|is a pull request|404' "$err"; then
+      state="NOTFOUND"
+    else
+      state="UNREADABLE"
+    fi
+    cat "$err" >&2
+    rm -f "$err"
+    [ -n "$f" ] && printf '%s\n' "$state" >"$f"
+  fi
+  case $state in
+    NOTFOUND) echo "ralph: #$for blocker #$b not found — fix the Blocked by list" >&2; return 1 ;;
+    UNREADABLE) echo "ralph: #$for blocker #$b unreadable (API failure) — will retry next run" >&2; return 1 ;;
+  esac
+  echo "$state"
+}
+
+# open_blocker <body> [for-issue] — prints the first blocker number that is
+# still not done and returns 0 when it is OPEN; returns 1 when none is open;
+# returns 2 (printing the number) when a blocker's state cannot be read or is
+# not a done/open state — callers fail closed (skip, never park). CLOSED and
+# MERGED both count as done.
 open_blocker() {
   local b state
   for b in $(blocked_by_refs <<<"$1"); do
-    state=$(gh_retry issue view "$b" --json state --jq .state 2>/dev/null) || { echo "$b"; return 2; }
-    if [ "$state" != "CLOSED" ]; then
-      echo "$b"
-      [ "$state" = "OPEN" ] && return 0
-      return 2
-    fi
+    state=$(blocker_state "$b" "${2:-?}") || { echo "$b"; return 2; }
+    case $state in
+      CLOSED | MERGED) ;;
+      OPEN) echo "$b"; return 0 ;;
+      *) echo "$b"; return 2 ;;
+    esac
   done
   return 1
 }
@@ -828,13 +862,36 @@ newest_branch() {
   echo "$best"
 }
 
-# reconcile_issue <n> <run_id> <work_status>
+# recovery_pr_body <n> <commit-subjects (newline-separated)> <gate-tail> <footer>
+# Pure: the recovery PR body in the fleet /pr shape (ops#475). The FIRST line is
+# the bare `Closes #<n>` (see prompt.md step 5), then Summary · Evidence ·
+# Merge Danger, then a `---` rule and the footer. The gate tail goes in a ~~~
+# fence with any line that could open/close a fence neutralised (indented 4
+# spaces); an empty tail says so. The Door is NOT asserted — a recovered branch
+# has not been judged one-way or two-way.
+recovery_pr_body() {
+  local n=$1 commits=${2:-} gate=${3:-} footer=${4:-} list
+  list=$(sed -e '/^[[:space:]]*$/d' -e 's/^/- /' <<<"$commits")
+  [ -n "$list" ] || list="- (commit subjects unavailable)"
+  printf 'Closes #%s\n\n## Summary\n\n%s\n\n## Evidence\n\n' "$n" "$list"
+  if [ -n "${gate//[[:space:]]/}" ]; then
+    printf '~~~\n%s\n~~~\n' "$(sed -E 's/^[[:space:]]*(```|~~~)/    &/' <<<"$gate")"
+  else
+    printf 'gate output unavailable\n'
+  fi
+  printf '\n## Merge Danger\n\n**Door:** unknown, check the diff (recovered branch)\n**Blast Radius:** see diff\n'
+  [ -z "$footer" ] || printf '\n---\n\n%s\n' "$footer"
+}
+
+# reconcile_issue <n> <run_id> <work_status> [log_path]
+# log_path: the run transcript (run.sh's $LOGFILE) — its tail is the gate evidence
+# in a recovered PR body; the log-name format lives only in run.sh.
 # State-based post-iteration reconciliation — the single place that decides
 # what actually happened, regardless of how the work step died. Prints one
 # token: pr:<num> | parked:<why> | failed:<why>. Never returns non-zero.
 reconcile_issue() {
-  local n=$1 run_id=$2 work_status=$3 all since pr closed branch i fails why eligible
-  local candidates cand_count passed_over
+  local n=$1 run_id=$2 work_status=$3 log_path=${4:-} all since pr closed branch i fails why eligible
+  local candidates cand_count passed_over commits gate_tail footer
   all=$(gh pr list --state all --limit 200 --json number,headRefName,state,createdAt \
     --jq "[.[] | select(.headRefName | startswith(\"ralph/issue-$n-\"))]" \
     2>/dev/null || echo '[]')
@@ -884,17 +941,17 @@ reconcile_issue() {
       return 0
     fi
     commits=$(git log --format=%s "origin/$(default_branch)..origin/$branch" 2>/dev/null || true)
-    gate_tail=$(tail -n 20 "ralph/logs/${run_id}-issue-${n}.log" 2>/dev/null || true)
-    for i in 1 2 3; do
-      if gh pr create --head "$branch" --base "$(default_branch)" \
-        --title "$(git log -1 --format=%s "origin/$branch" 2>/dev/null || echo "ralph: issue #$n")" \
-        --body "$(recovery_pr_body "$n" "$commits" "$gate_tail")
-
-Opened by ralph reconciliation (run \`$run_id\`): the iteration pushed this branch but its PR step failed.${passed_over:+
+    gate_tail=""
+    [ -z "$log_path" ] || gate_tail=$(tail -n 20 "$log_path" 2>/dev/null || true)
+    footer="Opened by ralph reconciliation (run \`$run_id\`): the iteration pushed this branch but its PR step failed.${passed_over:+
 
 **Other branches exist for this issue and were passed over:** $passed_over
 
-This branch was chosen because its head commit is the newest. If the work you wanted is on one of the others, open it by hand — nothing deletes them.}" \
+This branch was chosen because its head commit is the newest. If the work you wanted is on one of the others, open it by hand — nothing deletes them.}"
+    for i in 1 2 3; do
+      if gh pr create --head "$branch" --base "$(default_branch)" \
+        --title "$(git log -1 --format=%s "origin/$branch" 2>/dev/null || echo "ralph: issue #$n")" \
+        --body "$(recovery_pr_body "$n" "$commits" "$gate_tail" "$footer")" \
         >/dev/null 2>&1; then
         release_claim "$n"
         echo "pr:recovered"
@@ -1033,23 +1090,6 @@ prune_merged_ralph_branches() {
     esac
   done < <(git for-each-ref --format='%(refname:short)' refs/heads/ralph/ |
     grep -v '^ralph/claim-' || true)
-}
-
-# recovery_pr_body <n> <commit-subjects (newline-separated)> <gate-tail>
-# Pure: the recovery PR body in the fleet /pr shape (ops#475). The FIRST line is
-# the bare `Closes #<n>` (see prompt.md step 5), then Summary · Evidence ·
-# Merge Danger. An empty gate tail says so rather than leaving a blank fence.
-recovery_pr_body() {
-  local n=$1 commits=${2:-} gate=${3:-} list
-  list=$(sed -e '/^[[:space:]]*$/d' -e 's/^/- /' <<<"$commits")
-  [ -n "$list" ] || list="- (commit subjects unavailable)"
-  printf 'Closes #%s\n\n## Summary\n\n%s\n\n## Evidence\n\n' "$n" "$list"
-  if [ -n "${gate//[[:space:]]/}" ]; then
-    printf '```\n%s\n```\n' "$gate"
-  else
-    printf 'gate output unavailable\n'
-  fi
-  printf '\n## Merge Danger\n\n**Door:** two-way\n**Blast Radius:** see diff\n'
 }
 
 # Executed directly (`bash ralph/lib.sh <fn> [args]`) → dispatch one helper,

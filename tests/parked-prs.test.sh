@@ -56,11 +56,10 @@ check() { # <case> <active-count> <parked-count> <run-exit-13?yes|no> <prs...>
   if [ "$blocks" = yes ]; then
     assert_eq 13 "$RUN_CODE" "single-flight holds (exit 13)"
   else
-    if [ "$RUN_CODE" -ne 13 ] && ! grep -q "gh pr list failed" "$CASE/run.out"; then
-      _ok "single-flight does not hold (exit $RUN_CODE)"
-    else
-      _fail "single-flight does not hold" "run.sh exited $RUN_CODE: $(cat "$CASE/run.out")"
-    fi
+    # Past single-flight, run.sh reaches selection; the bare fixtures have no
+    # issue list, so next.sh fails and run.sh exits 20 — exactly that, never 13.
+    assert_eq 20 "$RUN_CODE" "single-flight does not hold (selection reached, exit 20)"
+    assert_eq "" "$(grep -F 'gh pr list failed' "$CASE/run.out")" "PR listing itself did not fail"
   fi
 }
 

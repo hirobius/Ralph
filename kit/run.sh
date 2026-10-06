@@ -168,7 +168,7 @@ work_status="claude exit $work_code"
 echo "ralph: work step finished ($work_status) — reconciling actual state"
 
 # ── 6. Reconcile — state decides, not the exit code ─────────────────────────
-outcome=$(reconcile_issue "$ISSUE" "$RUN_ID" "$work_status")
+outcome=$(reconcile_issue "$ISSUE" "$RUN_ID" "$work_status" "$LOGFILE")
 CLAIMED=0 # reconcile_issue released the claim on every path
 case $outcome in
 pr:*)

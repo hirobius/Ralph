@@ -79,20 +79,14 @@ has_dod_marker() {
   grep -qiE -- '- \[ \]|acceptance|definition of done|\bDoD\b' <<<"$1"
 }
 
+# Per-run cache of blocker states: a blocker shared by several candidates is
+# looked up once (open_blocker runs in a subshell, so the cache is a directory).
+RALPH_BLOCKER_CACHE=$(mktemp -d)
+export RALPH_BLOCKER_CACHE
+trap 'rm -rf "$RALPH_BLOCKER_CACHE"' EXIT
+
 for n in $ordered; do
-  # Frontier selection (ops#474): a candidate whose `## Blocked by` tickets are
-  # not all closed is skipped — no park, no attempt burned, stdout untouched.
-  # An unreadable blocker fails closed (skip, never park). Checked first so a
-  # blocked issue is never DoD-drafted or parked while it waits.
   body=$(jq -r --argjson n "$n" '.[] | select(.number == $n) | .body // ""' <<<"$issues")
-  blocker=$(open_blocker "$body") && brc=0 || brc=$?
-  if [ "$brc" -eq 0 ]; then
-    echo "ralph: #$n blocked by #$blocker (open) — skipping" >&2
-    continue
-  elif [ "$brc" -eq 2 ]; then
-    echo "ralph: cannot read blocker #$blocker of #$n (API failure) — skipping (fail-closed)" >&2
-    continue
-  fi
 
   # Freshly claimed by another runner → theirs, move on. Stale → offer it;
   # run.sh's claim step deletes the stale ref atomically before re-claiming.
@@ -106,6 +100,21 @@ for n in $ordered; do
   # the ready label. Otherwise a parked PR would be duplicated by a fresh run.
   if jq -e --arg p "ralph/issue-$n-" 'any(.[]; .headRefName | startswith($p))' <<<"$open_prs" >/dev/null; then
     echo "ralph: #$n already owns an open Ralph PR (in flight or parked) — skipping" >&2
+    continue
+  fi
+
+  # Frontier selection (ops#474): a candidate whose `## Blocked by` tickets are
+  # not all done (CLOSED/MERGED) is skipped — no park, no attempt burned, stdout
+  # untouched. An unreadable or missing blocker fails closed (skip, never park;
+  # open_blocker logs the reason). Runs AFTER the free guards above so it costs
+  # nothing for candidates already skipped, and BEFORE the DoD draft so a
+  # blocked issue is never drafted or parked while it waits.
+  blocker=$(open_blocker "$body" "$n") && brc=0 || brc=$?
+  if [ "$brc" -eq 0 ]; then
+    echo "ralph: #$n blocked by #$blocker (open) — skipping" >&2
+    continue
+  elif [ "$brc" -eq 2 ]; then
+    echo "ralph: #$n blocker #$blocker is not readable/usable — skipping (fail-closed)" >&2
     continue
   fi
 

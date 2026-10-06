@@ -197,4 +197,65 @@ assert_eq "" "$sel" "unreadable blocker → not picked"
 assert_eq 10 "$NEXT_CODE" "fails closed to queue-empty"
 assert_no_mutation "--add-label" "unreadable blocker never parks"
 
+# ── 13. Parser robustness: CRLF bodies, any heading level, trailing colon ────
+refs() { printf '%b' "$1" | bash "$CASE/ralph/lib.sh" blocked_by_refs | paste -sd, -; }
+new_case blocked_parser
+assert_eq "477" "$(refs '## Blocked by\r\n\r\n- #477\r\n')" "CRLF body: ref found"
+assert_eq "12,13" "$(refs '### Blocked by:\n\n- #12\n- #13\n')" "### heading with trailing colon"
+assert_eq "5" "$(refs '###### blocked BY\n- #5\n')" "h6, any case"
+assert_eq "" "$(refs '## Blocked by\n\nNone (can start immediately)\n\n## Notes\nsee #99')" "exact real None string"
+assert_eq "" "$(refs '## Blocked by\r\n\r\nNone (can start immediately)\r\n\r\n## Notes\r\nsee #99\r\n')" "None string, CRLF"
+assert_eq "" "$(refs '####### Blocked by\n- #5\n')" "7 hashes is not a heading"
+
+new_case blocked_crlf_open
+blocked_world '## DoD\r\n- [ ] done\r\n\r\n## Blocked by\r\n\r\n- #477\r\n'
+blocker_state 477 OPEN
+pick
+assert_eq "" "$sel" "CRLF body with open blocker → NOT picked (was failing open)"
+
+new_case blocked_merged_done
+blocked_world '## DoD\n- [ ] done\n\n## Blocked by\n\n- #12'
+blocker_state 12 MERGED
+pick
+assert_eq "20" "$sel" "MERGED blocker counts as done"
+
+new_case blocked_not_found
+blocked_world '## DoD\n- [ ] done\n\n## Blocked by\n\n- #12'
+export GH_FAIL_PATTERNS='issue view 12 '
+export GH_FAIL_MSG="GraphQL: Could not resolve to an issue or pull request with the number of 12."
+pick
+unset GH_FAIL_MSG
+assert_eq "" "$sel" "nonexistent blocker → fails closed"
+assert_contains "$(cat "$CASE/stderr.log")" "ralph: #20 blocker #12 not found" "permanent reason logged"
+assert_contains "$(cat "$CASE/stderr.log")" "Could not resolve" "gh stderr no longer discarded"
+
+new_case blocked_cache
+fixture issue_list.json <<'JSON'
+[{"number": 20, "labels": [{"name": "ralph-ready"}, {"name": "p0"}],
+  "body": "## DoD\n- [ ] a\n\n## Blocked by\n\n- #12"},
+ {"number": 21, "labels": [{"name": "ralph-ready"}, {"name": "p1"}],
+  "body": "## DoD\n- [ ] b\n\n## Blocked by\n\n- #12"}]
+JSON
+fixture pr_list_all.json <<'JSON'
+[]
+JSON
+blocker_state 12 OPEN
+export GH_CALL_LOG="$CASE/calls.log"
+: >"$GH_CALL_LOG"
+pick
+unset GH_CALL_LOG
+assert_eq 10 "$NEXT_CODE" "both blocked"
+assert_eq "1" "$(grep -c 'issue view 12' "$CASE/calls.log" || true)" "shared blocker looked up once per run"
+
+new_case blocked_after_free_guards
+blocked_world '## DoD\n- [ ] done\n\n## Blocked by\n\n- #12'
+fixture pr_list_all.json <<'JSON'
+[{"headRefName": "ralph/issue-20-x", "state": "OPEN", "mergedAt": null, "closedAt": null}]
+JSON
+export GH_CALL_LOG="$CASE/calls.log"
+: >"$GH_CALL_LOG"
+pick
+unset GH_CALL_LOG
+assert_eq "0" "$(grep -c 'issue view 12' "$CASE/calls.log" || true)" "already-skipped candidate never costs a blocker lookup"
+
 report

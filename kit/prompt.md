@@ -53,7 +53,8 @@ Append to progress.txt (terse, grammar optional):
   Write the rest of the body with the `pr` skill shape: `## Summary` (smallest
   visual) · `## Evidence` (gate.sh output tail, or the test that went red →
   green) · `## Merge Danger` (Door one-way/two-way, Blast Radius). Follow the
-  repo's `.github/PULL_REQUEST_TEMPLATE.md` when present.
+  repo's `.github/PULL_REQUEST_TEMPLATE.md` when present: its headings are the
+  `pr` shape, and any extra sections it has are kept too.
 - Comment the issue with a 2-line summary
 - Never merge. Never push to main. A human approves merges
   (`ralph-approved` on the PR, or the issue was pre-tagged `ralph-auto`).
