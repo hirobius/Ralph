@@ -56,8 +56,11 @@ check() { # <case> <active-count> <parked-count> <run-exit-13?yes|no> <prs...>
   if [ "$blocks" = yes ]; then
     assert_eq 13 "$RUN_CODE" "single-flight holds (exit 13)"
   else
-    [ "$RUN_CODE" -ne 13 ] && ! grep -q "gh pr list failed" "$CASE/run.out" && _ok "single-flight does not hold (exit $RUN_CODE)" ||
-      _fail "single-flight does not hold" "run.sh exited 13: $(cat "$CASE/run.out")"
+    if [ "$RUN_CODE" -ne 13 ] && ! grep -q "gh pr list failed" "$CASE/run.out"; then
+      _ok "single-flight does not hold (exit $RUN_CODE)"
+    else
+      _fail "single-flight does not hold" "run.sh exited $RUN_CODE: $(cat "$CASE/run.out")"
+    fi
   fi
 }
 
