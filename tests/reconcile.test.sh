@@ -106,6 +106,21 @@ out=$(run_reconcile)
 assert_eq "pr:recovered" "$out" "orphan branch recovered into a PR"
 assert_mutation "pr create" "PR was opened by reconciliation"
 
+# ── 5a. Recovery PR body: bare Closes line first + /pr sections (ops#475) ────
+new_case recovery_body
+body=$(bash "$CASE/ralph/lib.sh" recovery_pr_body 126 $'fix: a\nfeat: b' $'ok 1\nall green')
+assert_eq "Closes #126" "$(head -n1 <<<"$body")" "first line is exactly the bare Closes line"
+assert_contains "$body" "## Summary" "Summary heading"
+assert_contains "$body" "## Evidence" "Evidence heading"
+assert_contains "$body" "## Merge Danger" "Merge Danger heading"
+assert_contains "$body" "- fix: a" "commit subjects listed"
+assert_contains "$body" "all green" "gate tail included"
+assert_contains "$body" "**Door:** two-way" "door line"
+assert_contains "$body" "**Blast Radius:** see diff" "blast radius line"
+empty=$(bash "$CASE/ralph/lib.sh" recovery_pr_body 7 "" "")
+assert_contains "$empty" "gate output unavailable" "empty gate tail handled"
+assert_eq "Closes #7" "$(head -n1 <<<"$empty")" "bare Closes line with empty inputs"
+
 # ── 5b. Two orphan branches for one issue → recover the NEWEST commit, and say
 #       which branch was passed over (ralph#18). `older` sorts first in
 #       ls-remote's alphabetical order, so head -n1 would have picked it.
