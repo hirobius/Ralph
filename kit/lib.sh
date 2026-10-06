@@ -80,6 +80,42 @@ gh_retry() {
   return 1
 }
 
+# ------------------------------------------------------ frontier selection
+
+# blocked_by_refs — ops#474. Reads an issue body on stdin; prints the same-repo
+# `#N` refs listed under a `## Blocked by` heading (up to the next heading),
+# one per line, deduped. A missing section, or one whose first line starts with
+# "None", means no blockers (prints nothing). Cross-repo refs (owner/repo#N)
+# are ignored: only same-repo blockers can be checked.
+blocked_by_refs() {
+  awk '
+    { l = tolower($0) }
+    l ~ /^#+[ \t]+blocked by[ \t]*$/ { inside = 1; first = 1; next }
+    /^#+[ \t]/ { inside = 0 }
+    inside {
+      if (first && $0 ~ /^[ \t]*$/) next
+      if (first && l ~ /^[ \t]*none/) { inside = 0; next }
+      first = 0
+      print
+    }' | grep -oE '(^|[^A-Za-z0-9_/.-])#[0-9]+' | grep -oE '[0-9]+' | sort -un || true
+}
+
+# open_blocker <body> — prints the first blocker number that is still OPEN and
+# returns 0; returns 1 when none is open; returns 2 (printing the number) when
+# a blocker's state cannot be read — callers fail closed (skip, never park).
+open_blocker() {
+  local b state
+  for b in $(blocked_by_refs <<<"$1"); do
+    state=$(gh_retry issue view "$b" --json state --jq .state 2>/dev/null) || { echo "$b"; return 2; }
+    if [ "$state" != "CLOSED" ]; then
+      echo "$b"
+      [ "$state" = "OPEN" ] && return 0
+      return 2
+    fi
+  done
+  return 1
+}
+
 # --------------------------------------------------------- supervised paths
 
 # ralph_diff_is_supervised — ralph#25. Reads the changed file paths for a

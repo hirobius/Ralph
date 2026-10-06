@@ -20,6 +20,8 @@
 # Issues labeled blocked / needs-adrian / ralph-parked, or holding a fresh
 # claim (refs/heads/ralph/claim-<n>), are skipped — as is any candidate whose
 # history/budget cannot be verified (API failure fails closed: skip, no park).
+# Candidates with an OPEN ticket under their `## Blocked by` heading are skipped
+# too (ops#474; no park, no attempt burned; unreadable blocker fails closed).
 # Stale claims (older than RALPH_CLAIM_TTL, no open PR) do NOT block
 # selection — run.sh reclaims them.
 #
@@ -76,6 +78,20 @@ has_dod_marker() {
 }
 
 for n in $ordered; do
+  # Frontier selection (ops#474): a candidate whose `## Blocked by` tickets are
+  # not all closed is skipped — no park, no attempt burned, stdout untouched.
+  # An unreadable blocker fails closed (skip, never park). Checked first so a
+  # blocked issue is never DoD-drafted or parked while it waits.
+  body=$(jq -r --argjson n "$n" '.[] | select(.number == $n) | .body // ""' <<<"$issues")
+  blocker=$(open_blocker "$body") && brc=0 || brc=$?
+  if [ "$brc" -eq 0 ]; then
+    echo "ralph: #$n blocked by #$blocker (open) — skipping" >&2
+    continue
+  elif [ "$brc" -eq 2 ]; then
+    echo "ralph: cannot read blocker #$blocker of #$n (API failure) — skipping (fail-closed)" >&2
+    continue
+  fi
+
   # Freshly claimed by another runner → theirs, move on. Stale → offer it;
   # run.sh's claim step deletes the stale ref atomically before re-claiming.
   if claim_ref_exists "$n" && ! claim_is_stale "$n"; then
@@ -83,7 +99,6 @@ for n in $ordered; do
     continue
   fi
 
-  body=$(jq -r --argjson n "$n" '.[] | select(.number == $n) | .body // ""' <<<"$issues")
   if ! has_dod_marker "$body"; then
     echo "ralph: #$n has no acceptance-criteria/DoD marker — drafting a DoD checklist instead of a bare park (ops#296)" >&2
     # >&2: this script's stdout is ONLY the selected issue number; park side

@@ -26,6 +26,11 @@ NAME only — actual secrets live in each caller repo / the org.
   `needs-adrian` for direction, not a retry; anything else → record a failed
   attempt, park on the cap. `next.sh` applies the same PR-history guard at
   selection time, so the looping class never even costs a model iteration.
+- **Frontier selection** (ops#474): `next.sh` skips a `ralph-ready` issue while
+  any same-repo `#N` listed under its `## Blocked by` heading is still open
+  (logged to stderr; no park, no attempt burned). A missing section or
+  "None…" means no blockers; a blocker whose state can't be read fails closed
+  (skip). Closing the blocker makes the dependent pickable on the next run.
 - `tests/` — decision-table tests for the kit (`reconcile.test.sh` +
   `next.test.sh` + `attempts.test.sh` + `blocked-inference.test.sh` + `closure-verify.test.sh`, `gh`/`git` stubbed, no network; the #86 stall and #126
   restart loop are both locked cases) run via `.github/workflows/test.yml`
