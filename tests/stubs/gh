@@ -120,6 +120,10 @@ case "$1 ${2:-}" in
 "api -X") mutate ;; # DELETE claim ref / POST git ref
 "api "*)
   case "$argv" in
+  *"/issues?labels="*)
+    # ops#505: sub-issue prefetch; absent fixture = no ready issue has a parent
+    if [ -f "$GH_FIX_DIR/api_issues_ready.json" ]; then serve api_issues_ready.json; else echo "[]"; fi
+    ;;
   *"/issues/$issue/comments"*) serve "api_issue_comments_$issue.json" ;;
   *"/issues/$issue/events"*) serve "api_issue_events_$issue.json" ;;
   *"/commits/"*"/status"*)
