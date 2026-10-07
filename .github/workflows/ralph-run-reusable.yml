@@ -253,7 +253,17 @@ jobs:
           case "$outcome" in
             pr:*)     echo "✅ shipped — $outcome" ;;
             parked:*) echo "🅿️ ${outcome#parked:}" ;;
-            *)        echo "::error::iteration failed — ${outcome#failed:}"; exit 1 ;;
+            *)
+              # Retry hop (ops#481): a failed attempt with budget left
+              # re-dispatches now instead of idling until a throttled cron.
+              # Bounded by RALPH_MAX_ATTEMPTS: the last attempt parks instead.
+              retry=$(bash ralph/lib.sh retry_hop_issue "$outcome" "${{ steps.guard.outputs.issue }}" 2>/dev/null || true) # empty on a pre-hop vendored kit
+              if [ -n "$retry" ]; then
+                gh workflow run "${{ github.workflow }}" -R "$GITHUB_REPOSITORY" --field issue="$retry" &&
+                  echo "Retry hop: re-dispatched #$retry." ||
+                  echo "::warning::retry hop dispatch failed — #$retry waits for the next scheduled run."
+              fi
+              echo "::error::iteration failed — ${outcome#failed:}"; exit 1 ;;
           esac
 
       - name: Notify Discord (run summary)
