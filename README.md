@@ -58,6 +58,15 @@ NAME only — actual secrets live in each caller repo / the org.
   (propose-then-approve): scopes candidate work into TDD-shaped issue
   proposals; never tags `ralph-ready`, never touches code.
 
+- **Close on merge + `post-close.sh` hook** (ops#531): if a merged Ralph PR's
+  body names the issue with a closing keyword (`Closes`/`Fixes`/`Resolves #N`,
+  any case) but the issue is still open, the kit closes it as completed
+  (instead of parking it). Without a keyword it still parks. Bot closes never
+  trigger other workflows, so after any close the kit itself performs it runs
+  an optional, executable `ralph/post-close.sh <issue-number>` (looked up
+  beside `gate.sh`) — e.g. to run a spec rollup. A missing hook is fine; a
+  failing hook only logs a warning.
+
 ## Add Ralph to a repo
 
 1. Vendor the shared kit **from this repo**:

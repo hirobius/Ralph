@@ -643,6 +643,46 @@ model_left_substantive_comment() {
   [ "${count:-0}" -gt 0 ]
 }
 
+# True when <body> carries a GitHub closing keyword (close/closes/closed,
+# fix/fixes/fixed, resolve/resolves/resolved; case-insensitive) naming #<n> on
+# the SAME line. Emphasis markers and middot lists keep the number on the
+# keyword's line, so one line-scoped match covers them. A bare mention
+# ("see #126") never matches.
+body_closes_issue() { # <body> <n>
+  grep -iE '(clos(e|es|ed)|fix(es|ed)?|resolv(e|es|ed))[[:space:]:]' <<<"$1" |
+    grep -qE "#${2}([^0-9]|\$)"
+}
+
+# Optional consumer hook: ralph/post-close.sh <issue-number>, run after the kit
+# itself closes an issue. Bot closes never trigger other workflows (events
+# caused by GITHUB_TOKEN start none), so a consumer's `issues: closed`
+# automation (e.g. a spec rollup) needs this nudge. Looked up beside lib.sh the
+# same way the consumer's gate.sh is. A missing hook is fine; a failing hook
+# warns and never fails the run.
+run_post_close_hook() { # <n>
+  local hook="$RALPH_DIR/post-close.sh" rc=0
+  { [ -f "$hook" ] && [ -x "$hook" ]; } || return 0
+  "$hook" "$1" || rc=$?
+  [ "$rc" -eq 0 ] || echo "ralph: warning — post-close hook failed for #$1 (exit $rc); continuing" >&2
+  return 0
+}
+
+# Close #<n> as completed, citing merged PR #<pr>, then run the post-close hook.
+close_issue_for_merged_pr() { # <n> <pr>
+  local n=$1 pr=$2
+  if [ "$RALPH_DRY_RUN" = "1" ]; then
+    echo "ralph[dry-run]: would close #$n (merged PR #$pr names it with a closing keyword)" >&2
+    return 0
+  fi
+  if gh issue close "$n" --reason completed --comment "Closed by the Ralph loop: merged PR #$pr names this issue with a closing keyword, but the issue was still open." >/dev/null 2>&1; then
+    echo "ralph: closed #$n — merged PR #$pr names it with a closing keyword" >&2
+    run_post_close_hook "$n"
+  else
+    echo "ralph: could not close #$n after PR #$pr merged — do it by hand" >&2
+    return 1
+  fi
+}
+
 # After a Ralph PR merges, confirm its linked issue ACTUALLY closed — and close
 # it if GitHub's linkage silently failed. ops#305.
 #
@@ -679,8 +719,7 @@ verify_issue_closed() { # <pr>
   # sit outside the `#<n>` token (`**#126**` still contains `#126`), and a
   # middot list keeps every number on the keyword's line — so one line-scoped
   # match covers all three forms GitHub mis-parses.
-  grep -iE '(clos(e|es|ed)|fix(es|ed)?|resolv(e|es|ed))[[:space:]:]' <<<"$body" |
-    grep -qE "#${n}([^0-9]|\$)" || return 0
+  body_closes_issue "$body" "$n" || return 0
 
   istate=$(gh issue view "$n" --json state --jq .state 2>/dev/null) || return 0
   [ -z "$istate" ] && return 0
@@ -693,8 +732,12 @@ verify_issue_closed() { # <pr>
   gh issue close "$n" --reason completed --comment "Closed by the Ralph loop's post-merge check: PR #$pr merged carrying a closing keyword for this issue, but GitHub's linkage never fired.
 
 This is ops#305. It is not always malformed syntax — PR #360 carried a clean, bare \`Closes #297\` and still failed to close it — which is why the transition is verified after the merge rather than only checked before it." >/dev/null 2>&1 ||
-    echo "ralph: could not close #$n after PR #$pr merged — do it by hand" >&2
+    {
+      echo "ralph: could not close #$n after PR #$pr merged — do it by hand" >&2
+      return 0
+    }
   echo "ralph: closed #$n — PR #$pr merged but GitHub's linkage did not fire" >&2
+  run_post_close_hook "$n"
 }
 
 record_failed_attempt() { # <n> <run_id> <reason>
@@ -892,7 +935,7 @@ recovery_pr_body() {
 reconcile_issue() {
   local n=$1 run_id=$2 work_status=$3 log_path=${4:-} all since pr closed branch i fails why eligible
   local candidates cand_count passed_over commits gate_tail footer
-  all=$(gh pr list --state all --limit 200 --json number,headRefName,state,createdAt \
+  all=$(gh pr list --state all --limit 200 --json number,headRefName,state,createdAt,body \
     --jq "[.[] | select(.headRefName | startswith(\"ralph/issue-$n-\"))]" \
     2>/dev/null || echo '[]')
   # PRs from PAST runs must never count as THIS run's shipment: hds#126 looped
@@ -1032,6 +1075,19 @@ $blocked_reason
   #    merged work + human-only DoD items kept the issue open and looping).
   if jq -e --arg s "$since" \
     '[.[] | select(.state == "MERGED" and .createdAt < $s)] | length > 0' <<<"$all" >/dev/null; then
+    # A merged PR naming this issue with a closing keyword means GitHub's
+    # linkage failed (ops#531): close it, don't park it.
+    local mpr mbody
+    while IFS= read -r mpr; do
+      [ -z "$mpr" ] && continue
+      mbody=$(jq -r --argjson p "$mpr" '.[] | select(.number == $p) | .body // ""' <<<"$all")
+      if body_closes_issue "$mbody" "$n"; then
+        release_claim "$n"
+        close_issue_for_merged_pr "$n" "$mpr" || true
+        echo "closed:#$n — merged PR #$mpr names it with a closing keyword"
+        return 0
+      fi
+    done < <(jq -r --arg s "$since" '.[] | select(.state == "MERGED" and .createdAt < $s) | .number // empty' <<<"$all")
     release_claim "$n"
     park_issue "$n" "prior Ralph PR(s) merged but the issue is still open and this iteration produced nothing new — the remainder looks not agent-actionable. Close the issue or split what's left into a new issue, then re-add \`$RALPH_READY_LABEL\`." needs-adrian
     echo "parked:prior merged PR(s) but issue still open — remainder not agent-actionable"
