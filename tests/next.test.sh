@@ -258,4 +258,41 @@ pick
 unset GH_CALL_LOG
 assert_eq "0" "$(grep -c 'issue view 12' "$CASE/calls.log" || true)" "already-skipped candidate never costs a blocker lookup"
 
+# ── 13-15. Spec sub-issues must declare `## Blocked by` (ops#505) ────────────
+# A sub-issue (REST parent_issue_url set) with no section is parked; with a
+# "None" section it is picked; a standalone issue is untouched.
+sub_world() { # <issue-body> <parent_issue_url-json> — #20 with/without a parent
+  blocked_world "$1"
+  fixture api_issues_ready.json <<JSON
+[{"number": 20, "parent_issue_url": $2}]
+JSON
+}
+
+new_case subissue_no_section_parks
+sub_world '## DoD\n- [ ] done' '"https://api.github.com/repos/hirobius/test/issues/10"'
+pick
+assert_eq "" "$sel" "sub-issue without Blocked by → not picked"
+assert_mutation "--add-label needs-adrian" "sub-issue without Blocked by → parked to needs-adrian"
+assert_mutation "spec tickets must declare Blocked by (write None if none)" "park reason written"
+
+new_case subissue_none_picked
+sub_world '## DoD\n- [ ] done\n\n## Blocked by\n\n- None (can start immediately)' '"https://api.github.com/repos/hirobius/test/issues/10"'
+pick
+assert_eq "20" "$sel" "sub-issue with \`- None (can start immediately)\` → picked"
+assert_no_mutation "--add-label needs-adrian" "declared None never parks"
+
+new_case standalone_no_section_picked
+sub_world '## DoD\n- [ ] done' 'null'
+pick
+assert_eq "20" "$sel" "standalone without Blocked by → picked as before"
+assert_no_mutation "--add-label needs-adrian" "standalone never parks on this rule"
+
+new_case subissue_lookup_batched
+sub_world '## DoD\n- [ ] done\n\n## Blocked by\n\nNone' '"https://api.github.com/repos/hirobius/test/issues/10"'
+export GH_CALL_LOG="$CASE/calls.log"
+: >"$GH_CALL_LOG"
+pick
+unset GH_CALL_LOG
+assert_eq "1" "$(grep -c 'issues?labels=' "$CASE/calls.log" || true)" "parent lookup is one batched call"
+
 report

@@ -22,6 +22,9 @@
 # history/budget cannot be verified (API failure fails closed: skip, no park).
 # Candidates with an OPEN ticket under their `## Blocked by` heading are skipped
 # too (ops#474; no park, no attempt burned; unreadable blocker fails closed).
+# Spec tickets (sub-issues, i.e. with a parent) lacking a `## Blocked by` section
+# are parked to needs-adrian (ops#505) — write "None" if there are no blockers.
+# Standalone issues are unaffected. Parents come from ONE batched REST list.
 # Stale claims (older than RALPH_CLAIM_TTL, no open PR) do NOT block
 # selection — run.sh reclaims them.
 #
@@ -57,6 +60,11 @@ esac
 
 issues=$(gh_retry issue list --label "$RALPH_READY_LABEL" --state open \
   --limit 100 --json number,labels,body) || exit 20
+
+# ops#505: one batched lookup of which ready issues are sub-issues — the REST
+# issue JSON carries `parent_issue_url` only when the issue has a parent.
+sub_issues=$(gh_retry api "repos/$(repo_slug)/issues?labels=$RALPH_READY_LABEL&state=open&per_page=100" \
+  --jq '[.[] | select(.parent_issue_url != null) | .number]') || exit 20
 
 # One prefetch of every non-open ralph/issue-* PR — the history guard in the
 # candidate walk needs it, and fetching once keeps the walk O(1) API calls.
@@ -100,6 +108,15 @@ for n in $ordered; do
   # the ready label. Otherwise a parked PR would be duplicated by a fresh run.
   if jq -e --arg p "ralph/issue-$n-" 'any(.[]; .headRefName | startswith($p))' <<<"$open_prs" >/dev/null; then
     echo "ralph: #$n already owns an open Ralph PR (in flight or parked) — skipping" >&2
+    continue
+  fi
+
+  # ops#505: a spec ticket (has a parent) must declare `## Blocked by` (even if
+  # only "None") — makes /to-tickets' dependency graph mandatory. Park, don't skip.
+  if jq -e --argjson n "$n" 'index($n) != null' <<<"$sub_issues" >/dev/null &&
+    ! has_blocked_by_section <<<"$body"; then
+    echo "ralph: #$n is a spec sub-issue with no '## Blocked by' section — parking" >&2
+    park_issue "$n" "spec tickets must declare Blocked by (write None if none). Add a \`## Blocked by\` section (\`- None (can start immediately)\` if nothing blocks it), then re-add \`$RALPH_READY_LABEL\`." needs-adrian >&2
     continue
   fi
 
