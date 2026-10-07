@@ -103,6 +103,16 @@ blocked_by_refs() {
     }' | grep -oE '(^|[^A-Za-z0-9_/.-])#[0-9]+' | grep -oE '[0-9]+' | sort -un || true
 }
 
+# has_blocked_by_section — ops#505. Reads an issue body on stdin; returns 0 when
+# it carries a `## Blocked by` heading (same tolerance as blocked_by_refs: CRLF,
+# `#`..`######`, optional trailing colon), 1 otherwise. "None" counts as declared.
+has_blocked_by_section() {
+  tr -d '\r' | awk '
+    { l = tolower($0) }
+    l ~ /^#+[ \t]+blocked by:?[ \t]*$/ && match(l, /^#+/) && RLENGTH <= 6 { found = 1 }
+    END { exit found ? 0 : 1 }'
+}
+
 # blocker_state <n> <for-issue> — prints OPEN|CLOSED|MERGED|... or returns 1 when
 # unreadable (the reason is logged to stderr). Looked up once per run: results,
 # failures included, are cached under $RALPH_BLOCKER_CACHE (a directory the
