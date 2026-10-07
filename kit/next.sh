@@ -60,7 +60,7 @@ issues=$(gh_retry issue list --label "$RALPH_READY_LABEL" --state open \
 
 # One prefetch of every non-open ralph/issue-* PR — the history guard in the
 # candidate walk needs it, and fetching once keeps the walk O(1) API calls.
-all_prs=$(gh_retry pr list --state all --limit 200 --json headRefName,state,mergedAt,closedAt \
+all_prs=$(gh_retry pr list --state all --limit 200 --json number,headRefName,state,mergedAt,closedAt,body \
   --jq '[.[] | select(.headRefName | startswith("ralph/issue-"))]') || exit 20
 history=$(jq '[.[] | select(.state != "OPEN")]' <<<"$all_prs")
 open_prs=$(jq '[.[] | select(.state == "OPEN")]' <<<"$all_prs")
@@ -144,6 +144,24 @@ for n in $ordered; do
     | if any(.state == "MERGED") then "merged"
       elif length > 0 then "closed" else "" end' <<<"$history")
   if [ "$verdict" = "merged" ]; then
+    # ops#531: a merged PR naming this issue with a closing keyword means
+    # GitHub's linkage failed — close it (completed) instead of parking.
+    closed_by=""
+    while IFS= read -r mpr; do
+      [ -z "$mpr" ] && continue
+      mbody=$(jq -r --argjson p "$mpr" '.[] | select(.number == $p) | .body // ""' <<<"$history")
+      if body_closes_issue "$mbody" "$n"; then
+        closed_by=$mpr
+        break
+      fi
+    done < <(jq -r --arg p "ralph/issue-$n-" --arg b "${boundary:-1970-01-01T00:00:00Z}" '
+      .[] | select(.headRefName | startswith($p))
+          | select(.state == "MERGED" and (((.mergedAt // .closedAt) // "") > $b))
+          | .number // empty' <<<"$history")
+    if [ -n "$closed_by" ]; then
+      close_issue_for_merged_pr "$n" "$closed_by" >&2 || true
+      continue
+    fi
     echo "ralph: #$n already has merged PR(s) newer than its last $RALPH_READY_LABEL labeling — parking" >&2
     park_issue "$n" "prior Ralph PR(s) merged but the issue is still open — the remainder looks not agent-actionable. Close the issue or split what's left into a new issue, then re-add \`$RALPH_READY_LABEL\`." needs-adrian >&2
     continue
