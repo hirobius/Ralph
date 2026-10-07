@@ -31,6 +31,38 @@ case "$1 ${2:-}" in
   grep -F "refs/heads/$prefix" "$f" || true
   exit 0
   ;;
+"diff --name-only")
+  # tdd gate: changed paths between base and head
+  f="$GH_FIX_DIR/git_diff_names.txt"
+  [ -f "$f" ] || exit 1
+  cat "$f"
+  ;;
+"log --reverse")
+  # tdd gate: commit shas, oldest first
+  f="$GH_FIX_DIR/git_commits.txt"
+  [ -f "$f" ] || exit 1
+  cat "$f"
+  ;;
+"diff-tree --no-commit-id")
+  f="$GH_FIX_DIR/git_files_${argv##* }.txt"
+  [ -f "$f" ] || exit 1
+  cat "$f"
+  ;;
+"worktree add")
+  # worktree add -q --detach <dir> <sha>: materialise <dir>/ralph/test.sh from
+  # wt_runner_<sha>.sh (the exit code the test wants the red-first run to have)
+  dir="${*: -2:1}"
+  sha="${*: -1}"
+  echo "$sha" >>"$GH_FIX_DIR/wt_adds.log"
+  mkdir -p "$dir/ralph"
+  if [ -f "$GH_FIX_DIR/wt_runner_$sha.sh" ]; then
+    cp "$GH_FIX_DIR/wt_runner_$sha.sh" "$dir/ralph/test.sh"
+    chmod +x "$dir/ralph/test.sh"
+  fi
+  exit 0
+  ;;
+"worktree remove") exit 0 ;;
+"fetch -q") exit 0 ;;
 "rev-parse HEAD")
   echo "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
   ;;
