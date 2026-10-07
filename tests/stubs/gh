@@ -70,7 +70,7 @@ case "$1 ${2:-}" in
   *) serve pr_list_open.json ;;
   esac
   ;;
-"pr create") mutate ;;
+"pr create" | "pr edit") mutate ;;
 "run list")
   # ralph#16 classify_wedged: gh run list --workflow ralph-gate.yml --branch
   # <branch> --json status,createdAt. Fixture keyed by the --branch value

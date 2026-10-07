@@ -39,6 +39,9 @@ fi
 : "${RALPH_DOD_DRAFT_CMD:=}"         # ops#296: command drafting a DoD checklist from the issue body on stdin (a haiku-model call); empty = heuristic fallback, no workflow wiring required
 : "${RALPH_BLOCKED_REASON_MAX_CHARS:=1200}" # ops#370 item 2: cap on the quoted `ralph-blocked` body in a park comment
 
+: "${RALPH_TDD_ENFORCE_AFTER:=2026-10-21}" # ops#504: red-first mismatch only warns before this date (YYYY-MM-DD, UTC), fails the run on/after it
+: "${RALPH_TEST_PATH_RE:=(^|/)(tests?|__tests__|spec)/|\.(test|spec)\.[A-Za-z0-9]+$}" # what counts as a test file for the red-first check
+
 repo_slug() {
   # CI first: $GITHUB_REPOSITORY is the runner's canonical slug. The checkout's
   # origin URL is NOT trustworthy mid-job — claude-code-action rewrites it to
@@ -862,6 +865,114 @@ newest_branch() {
   echo "$best"
 }
 
+# ------------------------------------------------------------ pre-PR gates
+# ops#504. Repo-agnostic rules that run BEFORE a PR opens. The consumer
+# supplies the repo-specific parts as optional hooks next to gate.sh:
+#   ralph/check-tests.sh <base> <head>  - "source changed without tests" check
+#   ralph/test.sh                       - narrower test-only runner (optional;
+#                                         the red-first check prefers it over gate.sh)
+# A missing hook is skipped with a log line, never a failure.
+
+# pr_body_has_headings <body> - the three fleet /pr headings, each on its own line.
+pr_body_has_headings() {
+  local b=${1:-} h
+  for h in "## Summary" "## Evidence" "## Merge Danger"; do
+    grep -qxF -- "$h" <<<"$b" || return 1
+  done
+}
+
+# pr_body_or_recovery <body> <n> <commits> <gate-tail> <footer> - echoes the
+# body if it carries the three headings, else the recovery body (never fails).
+pr_body_or_recovery() {
+  if pr_body_has_headings "${1:-}"; then
+    printf '%s' "$1"
+  else
+    recovery_pr_body "$2" "${3:-}" "${4:-}" "${5:-}"
+  fi
+}
+
+# check_tests_with_code <base> <head> - runs the consumer's ralph/check-tests.sh
+# if present and executable. Echoes its output tail on failure; returns its code.
+check_tests_with_code() {
+  local base=$1 head=$2 hook="$RALPH_DIR/check-tests.sh" out rc=0
+  if [ ! -x "$hook" ]; then
+    echo "ralph: no ralph/check-tests.sh - tests-with-code gate skipped" >&2
+    return 0
+  fi
+  out=$("$hook" "$base" "$head" 2>&1) || rc=$?
+  [ "$rc" -eq 0 ] || printf '%s\n' "$(tail -n 15 <<<"$out")"
+  return "$rc"
+}
+
+# diff_files <base> <head> - changed paths (non-zero when git fails).
+diff_files() { git diff --name-only "$1...$2" 2>/dev/null; }
+
+# tdd_check <n> <base> <head> - the red-first rule. Returns 0 = ok / skipped /
+# warn-only, 1 = mismatch AND on/after RALPH_TDD_ENFORCE_AFTER (echoes the
+# reason). Costs at most ONE extra test run (the first test-touching commit;
+# HEAD's green is the normal gate's job). Docs-only diffs and unreadable git skip.
+tdd_check() {
+  local n=$1 base=$2 head=$3 files f sha first="" tmp runner rc=0 msg=""
+  files=$(diff_files "$base" "$head") || files=""
+  if [ -z "$files" ]; then
+    echo "ralph: tdd check skipped (no readable diff)" >&2
+    return 0
+  fi
+  if ! grep -qvE '\.md$|^docs/' <<<"$files"; then
+    echo "ralph: tdd check skipped (docs-only diff)" >&2
+    return 0
+  fi
+  while read -r sha; do
+    [ -n "$sha" ] || continue
+    f=$(git diff-tree --no-commit-id --name-only -r "$sha" 2>/dev/null) || continue
+    if grep -qE "$RALPH_TEST_PATH_RE" <<<"$f"; then
+      first=$sha
+      break
+    fi
+  done < <(git log --reverse --format=%H "$base..$head" 2>/dev/null)
+  if [ -z "$first" ]; then
+    msg="no commit on the branch touches test files - a failing test must be committed before the fix"
+  else
+    tmp=$(mktemp -d "${TMPDIR:-/tmp}/ralph-tdd-XXXXXX")
+    if git worktree add -q --detach "$tmp/wt" "$first" >/dev/null 2>&1; then
+      runner="$tmp/wt/ralph/gate.sh"
+      [ -x "$tmp/wt/ralph/test.sh" ] && runner="$tmp/wt/ralph/test.sh"
+      if [ -f "$runner" ]; then
+        (cd "$tmp/wt" && bash "$runner") >/dev/null 2>&1 || rc=$?
+        [ "$rc" -eq 0 ] && msg="the first test commit (${first:0:12}) passes on its own - it must FAIL (red) before the fix lands"
+      else
+        echo "ralph: tdd check skipped (no ralph/gate.sh in the first test commit)" >&2
+      fi
+      git worktree remove --force "$tmp/wt" >/dev/null 2>&1 || true
+    else
+      echo "ralph: tdd check skipped (could not check out ${first:0:12})" >&2
+    fi
+    rm -rf "$tmp"
+  fi
+  [ -n "$msg" ] || return 0
+  [ "$RALPH_DRY_RUN" = "1" ] ||
+    gh_retry issue comment "$n" --body "ralph-tdd: $msg" >/dev/null || true
+  if [[ "$(date -u +%F)" < "$RALPH_TDD_ENFORCE_AFTER" ]]; then
+    echo "ralph: WARNING (enforced from $RALPH_TDD_ENFORCE_AFTER) red-first: $msg" >&2
+    return 0
+  fi
+  echo "red-first violated: $msg"
+  return 1
+}
+
+# pre_pr_gates <n> [head-ref] - run before opening a PR. Echoes the reason and
+# returns 1 on failure (caller opens no PR). Executable as
+# `bash ralph/lib.sh pre_pr_gates <n> [ref]` - the model runs it before `gh pr create`.
+pre_pr_gates() {
+  local n=$1 head=${2:-HEAD} base out
+  base="origin/$(default_branch)"
+  if ! out=$(check_tests_with_code "$base" "$head"); then
+    echo "tests-with-code check failed: $out"
+    return 1
+  fi
+  tdd_check "$n" "$base" "$head"
+}
+
 # recovery_pr_body <n> <commit-subjects (newline-separated)> <gate-tail> <footer>
 # Pure: the recovery PR body in the fleet /pr shape (ops#475). The FIRST line is
 # the bare `Closes #<n>` (see prompt.md step 5), then Summary · Evidence ·
@@ -883,6 +994,19 @@ recovery_pr_body() {
   [ -z "$footer" ] || printf '\n---\n\n%s\n' "$footer"
 }
 
+# fix_pr_body <n> <pr> [log_path] - a model-opened PR whose body lacks the three
+# /pr headings gets the recovery body instead (never fails, never blocks the PR).
+fix_pr_body() {
+  local n=$1 pr=$2 log_path=${3:-} body branch commits gate_tail=""
+  [ "$RALPH_DRY_RUN" = "1" ] && return 0
+  body=$(gh pr view "$pr" --json body --jq .body 2>/dev/null) || return 0
+  pr_body_has_headings "$body" && return 0
+  branch=$(gh pr view "$pr" --json headRefName --jq .headRefName 2>/dev/null || true)
+  commits=$(git log --format=%s "origin/$(default_branch)..origin/$branch" 2>/dev/null || true)
+  [ -z "$log_path" ] || gate_tail=$(tail -n 20 "$log_path" 2>/dev/null || true)
+  gh pr edit "$pr" --body "$(recovery_pr_body "$n" "$commits" "$gate_tail" "PR body lacked the three /pr headings (Summary, Evidence, Merge Danger); replaced by ralph reconciliation.")" >/dev/null 2>&1 || true
+}
+
 # reconcile_issue <n> <run_id> <work_status> [log_path]
 # log_path: the run transcript (run.sh's $LOGFILE) — its tail is the gate evidence
 # in a recovered PR body; the log-name format lives only in run.sh.
@@ -891,7 +1015,7 @@ recovery_pr_body() {
 # token: pr:<num> | parked:<why> | failed:<why>. Never returns non-zero.
 reconcile_issue() {
   local n=$1 run_id=$2 work_status=$3 log_path=${4:-} all since pr closed branch i fails why eligible
-  local candidates cand_count passed_over commits gate_tail footer
+  local candidates cand_count passed_over commits gate_tail footer gate_fail=""
   all=$(gh pr list --state all --limit 200 --json number,headRefName,state,createdAt \
     --jq "[.[] | select(.headRefName | startswith(\"ralph/issue-$n-\"))]" \
     2>/dev/null || echo '[]')
@@ -907,6 +1031,7 @@ reconcile_issue() {
   pr=$(jq -r --arg s "$since" \
     '[.[] | select(.state == "OPEN" or (.state == "MERGED" and .createdAt >= $s))] | (first.number // empty)' <<<"$all")
   if [ -n "$pr" ]; then
+    fix_pr_body "$n" "$pr" "$log_path"
     release_claim "$n"
     echo "pr:$pr"
     return 0
@@ -948,7 +1073,10 @@ reconcile_issue() {
 **Other branches exist for this issue and were passed over:** $passed_over
 
 This branch was chosen because its head commit is the newest. If the work you wanted is on one of the others, open it by hand — nothing deletes them.}"
+    git fetch -q origin "$branch" >/dev/null 2>&1 || true
+    gate_fail=$(pre_pr_gates "$n" "origin/$branch") || gate_fail=${gate_fail:-pre-PR gate failed}
     for i in 1 2 3; do
+      [ -z "$gate_fail" ] || break
       if gh pr create --head "$branch" --base "$(default_branch)" \
         --title "$(git log -1 --format=%s "origin/$branch" 2>/dev/null || echo "ralph: issue #$n")" \
         --body "$(recovery_pr_body "$n" "$commits" "$gate_tail" "$footer")" \
@@ -959,7 +1087,11 @@ This branch was chosen because its head commit is the newest. If the work you wa
       fi
       sleep $((2 ** i))
     done
-    why="branch $branch pushed but PR creation failed after 3 attempts (auth/network?)"
+    if [ -n "$gate_fail" ]; then
+      why="branch $branch pushed but no PR opened - $(tr '\n' ' ' <<<"$gate_fail")"
+    else
+      why="branch $branch pushed but PR creation failed after 3 attempts (auth/network?)"
+    fi
   else
     why="iteration ended without a pushed branch ($work_status)"
   fi
