@@ -5,10 +5,15 @@ name: Ralph gate (reusable)
 # hirobius/ralph/.github/workflows/ralph-gate-reusable.yml@main).
 #
 # ralph/* PRs: deterministic gate (ralph/gate.sh) + INDEPENDENT AI review →
-# then HUMAN-IN-THE-LOOP merge policy: auto-merge is armed only when the PR
-# carries the approve label (default `ralph-approved`) or its linked issue was
-# pre-tagged for batch approval (default `ralph-auto`). Everything else waits.
-# Human PRs pass through untouched.
+# then the merge policy, decided by kit/lib.sh's ralph_arm_reason: auto-merge
+# is armed for the approve label (default `ralph-approved`) on the PR, a
+# linked issue pre-tagged `ralph-auto`, or the caller's opt-in
+# RALPH_DEFAULT_AUTO_MERGE posture (ralph#26) — and NEVER, under any of the
+# three, when the diff touches a path the caller's RALPH_SUPERVISED_CMD names
+# (ralph#25). A supervised PR waits with a comment naming the files; a human
+# adding the approve label afterwards (the `labeled` fast-path) is the
+# override. An unreadable kit or diff never arms. Human PRs pass through
+# untouched.
 #
 # Bounded self-heal: when the gate is red or the AI reviewer requests changes,
 # ONE repair attempt runs in-job (label `ralph-selfheal-attempted` is the hard
@@ -358,10 +363,30 @@ jobs:
               issue_ok=$(gh issue view "$n" --json labels 2>/dev/null |
                 jq -r --arg l "$RALPH_AUTO_MERGE_LABEL" '[.labels[].name] | index($l) != null' || echo false)
             fi
-            if [ "$pr_ok" = "true" ] || [ "$issue_ok" = "true" ]; then
-              why="\`$RALPH_APPROVE_LABEL\` label"
-              [ "$issue_ok" = "true" ] && why="issue #$n pre-tagged \`$RALPH_AUTO_MERGE_LABEL\`"
-              gh pr comment "$PR" --body "✅ **ralph-gate: PASS** — gate green + AI-approved + human-authorized ($why). Auto-merging. $s"
+            # ralph#25/#26: one decision for every arming reason. Paths come
+            # from the merge base, so a label added later can't skip the
+            # boundary. Fail closed when the kit or the diff can't be read.
+            base="${{ github.event.pull_request.base.ref }}"
+            reason=""
+            supervised=""
+            if ! type ralph_arm_reason >/dev/null 2>&1; then
+              echo "::warning::ralph/lib.sh did not load ralph_arm_reason — not arming (fail closed)."
+            elif ! paths=$(git diff --name-only "origin/$base...HEAD" 2>/dev/null); then
+              echo "::warning::could not read the PR diff against origin/$base — not arming (fail closed)."
+            else
+              reason=$(printf '%s\n' "$paths" | ralph_arm_reason "$pr_ok" "$issue_ok") || reason=""
+              if [ -z "$reason" ] && printf '%s\n' "$paths" | ralph_diff_is_supervised >supervised.txt 2>/dev/null; then
+                supervised=$(sed 's/^/- `/; s/$/`/' supervised.txt)
+                [ -n "$supervised" ] || supervised="- (the boundary command failed, so the whole diff is treated as supervised)"
+              fi
+            fi
+            if [ -n "$reason" ]; then
+              case "$reason" in
+                ralph-approved) why="\`$RALPH_APPROVE_LABEL\` label" ;;
+                "issue ralph-auto") why="issue #$n pre-tagged \`$RALPH_AUTO_MERGE_LABEL\`" ;;
+                *) why="default posture (\`RALPH_DEFAULT_AUTO_MERGE\`)" ;;
+              esac
+              gh pr comment "$PR" --body "✅ **ralph-gate: PASS** — gate green + AI-approved + authorized by $why. Auto-merging. $s"
               gh pr merge "$PR" --auto --squash ||
                 echo "auto-merge not enabled yet (needs branch protection + Allow auto-merge)."
               # Chain hop (see the labeled fast-path): GITHUB_TOKEN merges emit
@@ -374,6 +399,10 @@ jobs:
                 gh workflow run ralph.yml --ref "${{ github.event.repository.default_branch }}" ||
                   echo "::warning::chain hop skipped — caller lacks 'actions: write'. Add it under the ralph-gate job's permissions in .github/workflows/ralph-gate.yml to auto-continue the loop after merges; until then, re-trigger via workflow_dispatch or by re-adding ralph-ready."
               fi
+            elif [ -n "$supervised" ]; then
+              { printf '🟡 **ralph-gate: PASS — awaiting approval (supervised path).** Gate green + AI-approved, but this diff touches a supervised path, so it never auto-merges. %s\n\n' "$s"
+                printf '%s\n\nAdd the `%s` label to merge it.\n' "$supervised" "$RALPH_APPROVE_LABEL"; } >supervised-body.md
+              gh pr comment "$PR" --body-file supervised-body.md
             else
               gh pr comment "$PR" --body "$(printf '🟢 **ralph-gate: PASS — awaiting approval.** Gate green + AI-approved. %s\n\nAdd the `%s` label to merge this PR, or pre-tag issues `%s` (alongside `ralph-ready`) to batch-approve future PRs.' "$s" "$RALPH_APPROVE_LABEL" "$RALPH_AUTO_MERGE_LABEL")"
             fi
