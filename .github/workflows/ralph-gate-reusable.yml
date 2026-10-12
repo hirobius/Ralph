@@ -21,10 +21,11 @@ name: Ralph gate (reusable)
 # this workflow), and posts the verdict on the LIVE head sha. A second failure
 # alerts Discord — never a silent dead PR.
 #
-# Kit-drift guard: the caller's vendored ralph/ kit (lib.sh, next.sh, run.sh,
-# loop.sh, status.sh, prompt.md) is compared byte-for-byte against this repo's
-# canonical kit/ on every PR event. Per-repo files (gate.sh, config.env,
-# README.md) are exempt. A PR that itself touches a drifted kit file FAILS the
+# Kit-drift guard: the caller's vendored ralph/ kit (every file in
+# kit/MANIFEST.json's `kit` list, including the manifest itself) is compared
+# byte-for-byte against this repo's canonical kit/ on every PR event, by
+# scripts/kit-drift.sh (ralph#42). Per-repo files (the manifest's `perRepo`:
+# gate.sh, config.env, README.md, post-close.sh) are exempt. A PR that itself touches a drifted kit file FAILS the
 # gate; pre-existing drift on unrelated PRs is a warning annotation, so old
 # drift never blocks new work.
 #
@@ -92,12 +93,9 @@ jobs:
             rm -rf .engine-kit
             exit 0
           fi
-          drifted=""
-          for f in lib.sh next.sh run.sh loop.sh status.sh prompt.md; do
-            if [ -f "ralph/$f" ] && ! cmp -s "ralph/$f" ".engine-kit/kit/$f"; then
-              drifted="$drifted $f"
-            fi
-          done
+          # ralph#42: the file list is the engine's kit/MANIFEST.json (legacy
+          # list when that revision has none) — scripts/kit-drift.sh.
+          drifted=$(bash .engine-kit/scripts/kit-drift.sh ralph .engine-kit/kit | sed 's/^/ /' | tr -d '\n')
           rm -rf .engine-kit # keep the tree clean for gate.sh / the reviewer
           if [ -z "$drifted" ]; then
             echo "vendored kit is in sync with hirobius/ralph kit/"

@@ -16,7 +16,7 @@ new_case() { # <name>
   CASE_NAME=$1
   CASE=$(mktemp -d "${TMPDIR:-/tmp}/ralph-test-XXXXXX")
   mkdir -p "$CASE/ralph" "$CASE/fixtures"
-  cp "$REPO_DIR"/kit/*.sh "$REPO_DIR/kit/prompt.md" "$CASE/ralph/"
+  cp "$REPO_DIR"/kit/* "$CASE/ralph/" # = kit/MANIFEST.json (kit-manifest.test.sh)
   export GH_FIX_DIR="$CASE/fixtures"
   export GH_MUT_LOG="$CASE/mutations.log"
   : >"$GH_MUT_LOG"

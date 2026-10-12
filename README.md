@@ -7,9 +7,12 @@ NAME only — actual secrets live in each caller repo / the org.
 
 ## What lives here
 
-- `kit/` — the **canonical shared kit** (`lib.sh`, `next.sh`, `run.sh`,
-  `loop.sh`, `status.sh`, `prompt.md`). Consumer repos vendor byte-identical
-  copies under `ralph/`; the gate reusable enforces that (see below). The two
+- `kit/` — the **canonical shared kit**, listed in `kit/MANIFEST.json`
+  (`lib.sh`, `next.sh`, `run.sh`, `loop.sh`, `status.sh`, `prompt.md` and the
+  manifest itself). Consumer repos vendor byte-identical copies under
+  `ralph/`; the gate reusable enforces that through `scripts/kit-drift.sh`,
+  which reads the manifest (see below). A new kit file goes in the manifest
+  in the same change, or `tests/kit-manifest.test.sh` fails. The two
   **per-repo** files — `ralph/gate.sh` and `ralph/config.env` (plus each
   repo's `ralph/README.md`) — are exempt and live only in the consumers.
 - `.github/workflows/ralph-run-reusable.yml` — the run engine: deterministic
@@ -88,6 +91,7 @@ registered path exists, no markdown names a missing path. The suites:
 - `tests/fast-sleep.test.sh`: Test speed (ralph#40): retry/backoff sleeps are stubbed in tests, so a retried gh call costs no wall time, and the backoff schedule is...
 - `tests/gate-arming.test.sh`: Gate arming wiring (ralph#25 / ralph#26).
 - `tests/generated-docs.test.sh`: Generated-docs tests (ralph#37, spec ops#576): scripts/generate-readme-tests.sh (README's test list from tests/*.test.sh) and...
+- `tests/kit-manifest.test.sh`: Kit manifest (ralph#42): kit/MANIFEST.json is the one list of vendored kit files.
 - `tests/next.test.sh`: Decision-table tests for next.sh — the deterministic selector.
 - `tests/parked-prs.test.sh`: Decision-table tests for ops#476 — a Ralph PR labelled needs-adrian is PARKED on a human and no longer holds single-flight (run.sh exit...
 - `tests/pre-pr-gates.test.sh`: Pre-PR gates (ops#504): tests-with-code hook, /pr body headings, red-first.
