@@ -274,6 +274,107 @@ ralph_arm_reason() {
   return 1
 }
 
+# ------------------------------------------------------------ approver
+
+# ralph_approver_decide — ralph#43, the engine side of ops#564 (ADR-009 §3).
+# A PURE decision table: no gh, no git, nothing read but stdin. Reads facts
+# about a PR's final gate state as `key=value` lines (CRLF, blank lines,
+# `#` comments and spaces around keys/values tolerated; unknown keys
+# ignored) and prints exactly one line, `<merge|escalate|park> <code>`,
+# always with exit 0. tests/approver.test.sh holds a case for every row.
+#
+#   gate=green|red                 review=approve|request_changes|none
+#   supervised=true|false|unknown  security=none|low|medium|high|critical|unknown
+#   disagree=true|false            approver=off|ok|error|rate_limited|empty
+#   approver_verdict=merge|escalate   (read only when approver=ok)
+#
+# First match wins:
+#    1 gate=red                                    → park gate-red
+#    2 a fact missing, duplicated or unknown       → escalate unreadable-facts
+#    3 review=request_changes (after self-heal)    → escalate rework-exhausted
+#    4 review=none                                 → escalate no-review
+#    5 supervised=true|unknown                     → escalate supervised-path
+#    6 security=high|critical|unknown              → escalate security-finding
+#    7 disagree=true                               → escalate reviewer-disagreement
+#    8 approver=error|rate_limited|empty, or ok
+#      without a valid verdict                     → escalate approver-unavailable
+#    9 approver=ok + approver_verdict=escalate     → escalate approver-escalated
+#   10 otherwise                                   → merge policy-clear
+#
+# Park wins over escalate: a red PR has nothing to approve. Unreadable input
+# never merges. A model verdict (Phase 2) is only rows 8-9, after every code
+# rule, so it can add an escalation but never clear one.
+_ralph_one_of() { # <value> <allowed...> — exact membership
+  local v=$1 a
+  shift
+  for a in "$@"; do [ "$v" = "$a" ] && return 0; done
+  return 1
+}
+
+ralph_approver_decide() {
+  local line k v gate="" review="" supervised="" security="" disagree="" approver="" verdict="" seen=" "
+  while IFS= read -r line || [ -n "$line" ]; do
+    line=${line%$'\r'}
+    case "$line" in '' | \#*) continue ;; *=*) ;; *) continue ;; esac
+    k=${line%%=*} v=${line#*=}
+    k=${k#"${k%%[![:space:]]*}"} k=${k%"${k##*[![:space:]]}"}
+    v=${v#"${v%%[![:space:]]*}"} v=${v%"${v##*[![:space:]]}"}
+    case "$k" in gate | review | supervised | security | disagree | approver | approver_verdict) ;; *) continue ;; esac
+    case "$seen" in *" $k "*)
+      echo "escalate unreadable-facts"
+      return 0
+      ;;
+    esac
+    seen="$seen$k "
+    case "$k" in
+      gate) gate=$v ;; review) review=$v ;; supervised) supervised=$v ;;
+      security) security=$v ;; disagree) disagree=$v ;; approver) approver=$v ;;
+      approver_verdict) verdict=$v ;;
+    esac
+  done
+  if [ "$gate" = red ]; then echo "park gate-red"; return 0; fi
+  if ! _ralph_one_of "$gate" green ||
+    ! _ralph_one_of "$review" approve request_changes none ||
+    ! _ralph_one_of "$supervised" true false unknown ||
+    ! _ralph_one_of "$security" none low medium high critical unknown ||
+    ! _ralph_one_of "$disagree" true false ||
+    ! _ralph_one_of "$approver" off ok error rate_limited empty; then
+    echo "escalate unreadable-facts"
+    return 0
+  fi
+  case "$review" in
+    request_changes) echo "escalate rework-exhausted"; return 0 ;;
+    none) echo "escalate no-review"; return 0 ;;
+  esac
+  case "$supervised" in true | unknown) echo "escalate supervised-path"; return 0 ;; esac
+  case "$security" in high | critical | unknown) echo "escalate security-finding"; return 0 ;; esac
+  [ "$disagree" = true ] && { echo "escalate reviewer-disagreement"; return 0; }
+  case "$approver/$verdict" in
+    off/*) ;;
+    ok/merge) ;;
+    ok/escalate) echo "escalate approver-escalated"; return 0 ;;
+    *) echo "escalate approver-unavailable"; return 0 ;;
+  esac
+  echo "merge policy-clear"
+}
+
+# ralph_approver_reason <code> — the sentence a verdict comment quotes for a
+# ralph_approver_decide code (ralph#43). Unknown code → prints nothing.
+ralph_approver_reason() {
+  case "${1:-}" in
+    gate-red) echo "The gate is still red after the self-heal round, so there is nothing to approve. Parked for a human to direct the work." ;;
+    unreadable-facts) echo "The approver could not read the PR's state (a fact was missing or unrecognised), so it will not merge by default." ;;
+    rework-exhausted) echo "The reviewer still requests changes after the self-heal round. A human decides whether to merge, fix or close." ;;
+    no-review) echo "The independent review produced no verdict, so nothing vouches for this diff." ;;
+    supervised-path) echo "The diff touches a supervised (revenue or boundary) path. Those merge only with a human's approval." ;;
+    security-finding) echo "The review reported a high or critical security finding (or one of unknown severity)." ;;
+    reviewer-disagreement) echo "The reviewers disagree about this diff." ;;
+    approver-unavailable) echo "The approver could not run (error, rate limit or empty verdict). It never merges by default." ;;
+    approver-escalated) echo "The approver model asked for a human review." ;;
+    policy-clear) echo "Gate green, review approved, no supervised path, no high or critical security finding." ;;
+  esac
+}
+
 notify_discord() {
   if [ -z "${DISCORD_WEBHOOK_URL:-}" ]; then
     echo "ralph: (no DISCORD_WEBHOOK_URL — not pinging) $*" >&2

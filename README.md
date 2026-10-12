@@ -78,6 +78,7 @@ registered path exists, no markdown names a missing path. The suites:
 
 <!-- ralph:tests:start — generated from tests/*.test.sh by scripts/generate-readme-tests.sh; do not hand-edit until the end marker. -->
 
+- `tests/approver.test.sh`: Approver Phase 1 (ralph#43, engine side of ops#564): ralph_approver_decide is a pure decision table.
 - `tests/arm-reason.test.sh`: ralph_arm_reason tests (ralph#26).
 - `tests/attempts.test.sh`: Attempt-accounting tests for the selector's budget guard (ops#303).
 - `tests/blocked-inference.test.sh`: Fallback blocked-stop inference (ops#303, the PRIMARY half).
