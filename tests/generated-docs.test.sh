@@ -142,6 +142,19 @@ sed -i 's/Alpha\./Hand edited./' "$R/README.md"
 run "$README_GEN" --check
 assert_eq 1 "$RUN_CODE" "a hand edit inside the block is stale"
 
+# A long header with a multibyte character must cut at the same place in any
+# locale: bash counts bytes under C/POSIX and characters under UTF-8 (CI).
+new_root readme-locale
+suite epsilon 'Epsilon — a header with an em dash and enough words that it runs well past the one hundred and forty character cap set for the README list.'
+readme_with_markers
+RUN_CODE=0; LC_ALL=C bash "$README_GEN" --root "$R" >/dev/null 2>&1 || RUN_CODE=$?
+assert_eq 0 "$RUN_CODE" "generation succeeds under LC_ALL=C"
+c_out=$(cat "$R/README.md")
+RUN_CODE=0; LC_ALL=C.UTF-8 bash "$README_GEN" --root "$R" --check >/dev/null 2>&1 || RUN_CODE=$?
+assert_eq 0 "$RUN_CODE" "a list generated under LC_ALL=C passes --check under C.UTF-8"
+RUN_CODE=0; LC_ALL=C.UTF-8 bash "$README_GEN" --root "$R" >/dev/null 2>&1 || RUN_CODE=$?
+assert_eq "$c_out" "$(cat "$R/README.md")" "C and C.UTF-8 produce the same list"
+
 # ── AGENTS.md front door ────────────────────────────────────────────────
 write_registry() {
   cat >"$R/docs/state-surfaces.json" <<'EOF2'

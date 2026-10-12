@@ -82,10 +82,10 @@ suite_summary() {
     END { print text }' "$1")
   text=$(first_sentence "$text")
   [ -n "$text" ] || return 0
-  if ((${#text} > 140)); then
-    text=${text:0:137}
-    text="${text% *}..."
-  fi
+  # Count characters with jq, not ${#text}: bash counts bytes under a C/POSIX
+  # locale and characters under UTF-8, so a multibyte character (an em dash)
+  # would cut at a different place on CI than on a laptop.
+  text=$(printf '%s' "$text" | jq -Rrs 'if length > 140 then (.[0:137] | sub(" [^ ]*$"; "")) + "..." else . end')
   case $text in
     *[.?!]) ;;
     *) text="$text." ;;
