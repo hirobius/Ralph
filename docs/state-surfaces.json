@@ -34,14 +34,22 @@
     {
       "path": "kit/status.sh",
       "describes": "Live loop health: queue order, in-flight PRs and wedge state, active claims, recent runs. Nothing is committed; it reads GitHub when run",
-      "kind": "generated",
-      "by": "kit/status.sh"
+      "kind": "checked",
+      "by": "tests/parked-prs.test.sh"
     },
     {
       "path": "tests",
       "describes": "The kit's decision-table tests (gh and git stubbed); the same run gates the generated docs and this registry",
       "kind": "checked",
       "by": "tests/run.sh"
+    },
+    {
+      "path": "docs/agents-intro.md",
+      "describes": "The hand-written intro of AGENTS.md: what Ralph is, read order, working rules, where live state is. The generator includes it verbatim",
+      "kind": "editorial",
+      "owner": "Adrian",
+      "reviewedAt": "2026-10-12",
+      "maxAgeDays": 90
     },
     {
       "path": "kit/prompt.md",

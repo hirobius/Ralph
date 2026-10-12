@@ -35,9 +35,39 @@ README_PATH=README.md
 TESTS_START='<!-- ralph:tests:start — generated from tests/*.test.sh by scripts/generate-readme-tests.sh; do not hand-edit until the end marker. -->'
 TESTS_END='<!-- ralph:tests:end -->'
 
+# first_sentence <text> — <text> up to its first sentence end: a period followed
+# by a space, unless the word it closes is an abbreviation (e.g. i.e. cf. vs.).
+first_sentence() {
+  local rest=$1 acc='' head word
+  while :; do
+    case $rest in
+      *". "*) ;;
+      *)
+        acc+=$rest
+        break
+        ;;
+    esac
+    head=${rest%%". "*}
+    word=${head##* }
+    word=${word#\(}
+    case ${word,,} in
+      e.g | i.e | cf | vs)
+        acc+="$head. "
+        rest=${rest#*". "}
+        ;;
+      *)
+        acc+=$head
+        break
+        ;;
+    esac
+  done
+  printf '%s' "$acc"
+}
+
 # suite_summary <file> — the first sentence of the file's header comment (the
 # comment paragraph after the shebang), at most 140 characters (cut at a word,
-# then "..."), ending in sentence punctuation.
+# then "..."), ending in sentence punctuation. Prints nothing when the file has
+# no header comment.
 suite_summary() {
   local text
   text=$(awk '
@@ -50,7 +80,8 @@ suite_summary() {
     }
     { exit }
     END { print text }' "$1")
-  text=${text%%. *}
+  text=$(first_sentence "$text")
+  [ -n "$text" ] || return 0
   if ((${#text} > 140)); then
     text=${text:0:137}
     text="${text% *}..."
@@ -63,12 +94,17 @@ suite_summary() {
 }
 
 build_block() {
-  local f name any=0
+  local f name summary any=0
   printf '%s\n\n' "$TESTS_START"
   while IFS= read -r f; do
     any=1
     name=${f#"$ROOT"/}
-    printf -- '- `%s`: %s\n' "$name" "$(suite_summary "$f")"
+    summary=$(suite_summary "$f")
+    if [ -n "$summary" ]; then
+      printf -- '- `%s`: %s\n' "$name" "$summary"
+    else
+      printf -- '- `%s`\n' "$name"
+    fi
   done < <(find "$ROOT/tests" -maxdepth 1 -name '*.test.sh' -type f | LC_ALL=C sort)
   if [ "$any" -eq 0 ]; then printf '(no suites)\n'; fi
   printf '\n%s' "$TESTS_END"
@@ -78,8 +114,10 @@ build_block() {
   echo "x $README_PATH is missing" >&2
   exit 1
 }
-current=$(read_file "$ROOT/$README_PATH")
-if ! next=$(replace_block "$current" "$TESTS_START" "$TESTS_END" "$(build_block)"); then
+current=''
+next=''
+read_file current "$ROOT/$README_PATH"
+if ! replace_block next "$current" "$TESTS_START" "$TESTS_END" "$(build_block)"; then
   echo "x $README_PATH has no ralph:tests start/end markers; add them where the test list belongs." >&2
   exit 1
 fi

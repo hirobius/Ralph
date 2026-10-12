@@ -22,6 +22,13 @@ new_root() { # <name>
   CASE_NAME=$1
   R=$(mktemp -d "${TMPDIR:-/tmp}/ralph-gen-XXXXXX")
   mkdir -p "$R/tests" "$R/docs"
+  cat >"$R/docs/agents-intro.md" <<'EOF2'
+# AGENTS.md: Fixture
+
+Fixture is a loop engine. Read `README.md`, then run `bash tests/run.sh`.
+
+Live state is the ops dashboard's `/ops/standing`; run `kit/status.sh` for one loop.
+EOF2
 }
 
 suite() { # <name> <header-comment-lines...>
@@ -91,6 +98,34 @@ rm "$R/tests/alpha.test.sh"
 run "$README_GEN" --check
 assert_eq 1 "$RUN_CODE" "--check fails when a suite is removed"
 
+new_root readme-edge-headers
+suite abbrev 'Pick one, e.g. the oldest, then stop. Second sentence.'
+suite paren 'Handles (i.e. exactly) one case. Next.'
+printf '#!/usr/bin/env bash\nset -uo pipefail\n' >"$R/tests/bare.test.sh"
+printf '#!/usr/bin/env bash\n# shellcheck shell=bash\n\nset -uo pipefail\n' >"$R/tests/directive-only.test.sh"
+readme_with_markers
+run "$README_GEN"
+assert_eq 0 "$RUN_CODE" "generation succeeds with headerless suites"
+README=$(cat "$R/README.md")
+assert_contains "$README" '- `tests/abbrev.test.sh`: Pick one, e.g. the oldest, then stop.' "e.g. does not end the sentence"
+assert_contains "$README" '- `tests/paren.test.sh`: Handles (i.e. exactly) one case.' "(i.e. ...) does not end the sentence"
+assert_contains "$README" '- `tests/bare.test.sh`' "a headerless suite is still listed"
+case $README in *'bare.test.sh`: .'*|*'directive-only.test.sh`: .'*) _fail "no lone period for a headerless suite" ;; *) _ok "no lone period for a headerless suite" ;; esac
+case $README in *'bare.test.sh`:'*|*'directive-only.test.sh`:'*) _fail "no empty description after the colon" ;; *) _ok "no empty description after the colon" ;; esac
+run "$README_GEN" --check
+assert_eq 0 "$RUN_CODE" "--check passes with headerless suites"
+
+new_root readme-trailing-newline
+suite alpha 'Alpha.'
+readme_with_markers
+run "$README_GEN"
+[ -z "$(tail -c1 "$R/README.md")" ] && _ok "a README that ends with a newline still does" || _fail "a README that ends with a newline still does"
+printf 'no final newline' >>"$R/README.md"
+run "$README_GEN"
+assert_eq "no final newline" "$(tail -c16 "$R/README.md")" "a README with no final newline is not given one"
+run "$README_GEN" --check
+assert_eq 0 "$RUN_CODE" "--check agrees with the preserved ending"
+
 new_root readme-no-markers
 suite alpha 'Alpha.'
 printf '# Fixture\n' >"$R/README.md"
@@ -114,7 +149,8 @@ write_registry() {
  {"path":"AGENTS.md","describes":"The front door","kind":"generated","by":"scripts/generate-agents-md.sh"},
  {"path":"README.md","describes":"Prose","kind":"editorial","owner":"Adrian","reviewedAt":"2026-10-01","maxAgeDays":90,"section":"prose"},
  {"path":"README.md","describes":"Test list","kind":"generated","by":"scripts/generate-readme-tests.sh","section":"ralph:tests"},
- {"path":"kit/status.sh","describes":"Live snapshot","kind":"generated","by":"kit/status.sh"},
+ {"path":"docs/agents-intro.md","describes":"The hand-written intro","kind":"editorial","owner":"Adrian","reviewedAt":"2026-10-01","maxAgeDays":90},
+ {"path":"kit/status.sh","describes":"Live snapshot","kind":"checked","by":"tests/parked-prs.test.sh"},
  {"path":"tests","describes":"Suites","kind":"checked","by":"tests/run.sh"}
 ]}
 EOF2
@@ -125,22 +161,50 @@ write_registry
 run "$AGENTS_GEN"
 assert_eq 0 "$RUN_CODE" "generation succeeds with no AGENTS.md yet"
 AGENTS=$(cat "$R/AGENTS.md")
-assert_contains "$AGENTS" '# AGENTS.md: Ralph' "titled for Ralph"
-assert_contains "$AGENTS" 'autonomous issue-to-PR loop engine' "says what Ralph is in one line"
-assert_contains "$AGENTS" '## Read order' "has a read order"
-assert_contains "$AGENTS" '`bash tests/run.sh`' "names the test command"
-assert_contains "$AGENTS" 'https://hirobius-ops-adrian-6234s-projects.vercel.app/ops/standing' "points at live state in ops"
-assert_contains "$AGENTS" '`kit/status.sh`' "points at the loop snapshot"
+assert_contains "$AGENTS" '# AGENTS.md: Fixture' "the hand-written intro opens the file"
+assert_contains "$AGENTS" 'Fixture is a loop engine. Read `README.md`, then run `bash tests/run.sh`.' "the intro file is included verbatim"
+case $AGENTS in *vercel.app*|*https://*) _fail "no ops host baked into the generator" ;; *) _ok "no ops host baked into the generator" ;; esac
+case $(cat "$AGENTS_GEN") in *vercel.app*) _fail "the generator names no ops host" ;; *) _ok "the generator names no ops host" ;; esac
+case $AGENTS in *'The hand-written intro'*) _ok "the intro file is indexed as editorial" ;; *) _fail "the intro file is indexed as editorial" ;; esac
 assert_contains "$AGENTS" '### Generated' "indexes generated documents"
 assert_contains "$AGENTS" '### Checked' "indexes checked documents"
 assert_contains "$AGENTS" '### Editorial' "indexes editorial documents"
 assert_contains "$AGENTS" '- `README.md` (prose): Prose. Adrian, reviewed 2026-10-01, re-read within 90 days.' "editorial rows print owner and review date"
 assert_contains "$AGENTS" '- `README.md` (ralph:tests): Test list. Built by `scripts/generate-readme-tests.sh`.' "generated rows name their generator and section"
 assert_contains "$AGENTS" '- `tests`: Suites. Checked by `tests/run.sh`.' "checked rows name their gate"
-assert_contains "$AGENTS" '- `kit/status.sh`: Live snapshot. Generated at runtime.' "a runtime-generated surface says so"
+assert_contains "$AGENTS" '- `kit/status.sh`: Live snapshot. Checked by `tests/parked-prs.test.sh`.' "a script is checked by the test that exercises it, not generated by itself"
+case $AGENTS in *'Generated at runtime'*) _fail "no self-generated rows" ;; *) _ok "no self-generated rows" ;; esac
+case $AGENTS in *'Hand-kept'*) _fail "the checked gloss does not call code hand-kept" ;; *) _ok "the checked gloss does not call code hand-kept" ;; esac
 run "$AGENTS_GEN" --check
 assert_eq 0 "$RUN_CODE" "--check passes right after generating"
 case $AGENTS in *[0-9].[0-9].[0-9]*) _fail "no version numbers in the front door" ;; *) _ok "no version numbers in the front door" ;; esac
+
+new_root agents-intro-edit
+write_registry
+run "$AGENTS_GEN"
+printf '\nA new rule.\n' >>"$R/docs/agents-intro.md"
+run "$AGENTS_GEN" --check
+assert_eq 1 "$RUN_CODE" "editing the intro file makes AGENTS.md stale until regenerated"
+run "$AGENTS_GEN"
+assert_contains "$(cat "$R/AGENTS.md")" 'A new rule.' "regeneration picks up the intro edit"
+
+new_root agents-no-intro
+write_registry
+rm "$R/docs/agents-intro.md"
+run "$AGENTS_GEN"
+assert_eq 1 "$RUN_CODE" "a missing intro file is an error"
+assert_contains "$RUN_OUT" "agents-intro.md" "names the intro file"
+[ ! -e "$R/AGENTS.md" ] && _ok "nothing is written without the intro" || _fail "nothing is written without the intro"
+
+new_root agents-multiline-describes
+cat >"$R/docs/state-surfaces.json" <<'EOF2'
+{"surfaces":[{"path":"README.md","describes":"Prose\nover two lines","kind":"editorial","owner":"A","reviewedAt":"2026-10-01","maxAgeDays":9},
+ {"path":"tests","describes":"Suites","kind":"checked","by":"tests/run.sh"}]}
+EOF2
+run "$AGENTS_GEN"
+AGENTS=$(cat "$R/AGENTS.md")
+assert_contains "$AGENTS" '- `README.md`: Prose over two lines. A, reviewed' "a multi-line describes stays on one list line"
+assert_contains "$AGENTS" '- `tests`: Suites. Checked by `tests/run.sh`.' "the row after it is intact"
 
 new_root agents-kind-absent
 cat >"$R/docs/state-surfaces.json" <<'EOF2'
@@ -160,6 +224,15 @@ assert_eq 0 "$RUN_CODE" "hand-written notes after the end marker do not make it 
 run "$AGENTS_GEN"
 assert_eq "$before" "$(cat "$R/AGENTS.md")" "regenerating keeps the notes byte for byte"
 
+new_root agents-trailing-bytes
+write_registry
+run "$AGENTS_GEN"
+[ -z "$(tail -c1 "$R/AGENTS.md")" ] && _ok "a fresh AGENTS.md ends with a newline" || _fail "a fresh AGENTS.md ends with a newline"
+printf '\n## Notes\n\nKeep.\n\n\n' >>"$R/AGENTS.md"
+before=$(cksum <"$R/AGENTS.md")
+run "$AGENTS_GEN"
+assert_eq "$before" "$(cksum <"$R/AGENTS.md")" "trailing blank lines after the end marker survive byte for byte"
+
 new_root agents-stale
 write_registry
 run "$AGENTS_GEN"
@@ -173,7 +246,7 @@ assert_contains "$(cat "$R/AGENTS.md")" 'reviewed 2026-10-12' "regeneration prin
 new_root agents-hand-edit
 write_registry
 run "$AGENTS_GEN"
-sed -i 's/Ralph is the org-level/Ralph is the/' "$R/AGENTS.md"
+sed -i 's/Fixture is a loop engine/Fixture is an engine/' "$R/AGENTS.md"
 run "$AGENTS_GEN" --check
 assert_eq 1 "$RUN_CODE" "a hand edit inside the generated block is stale"
 

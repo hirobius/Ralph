@@ -4,8 +4,11 @@
 # kit, where live state is, and an index of every document in
 # docs/state-surfaces.json grouped by kind.
 #
-# The whole file up to the front-door end marker is generated. Hand-written
-# notes may follow the end marker; the generator keeps them byte for byte.
+# The intro (title, read order, working rules, where live state is) is
+# editorial: docs/agents-intro.md, registered in the registry and included
+# verbatim. The whole file up to the front-door end marker is generated;
+# hand-written notes may follow the end marker, and the generator keeps them
+# byte for byte.
 # Nothing here records a version, a count or open work: those are derived, and
 # ops states them live. Deterministic (no run dates), so --check compares
 # exact bytes.
@@ -39,7 +42,7 @@ done
 
 AGENTS_PATH=AGENTS.md
 REGISTRY_PATH=docs/state-surfaces.json
-OPS_STANDING_URL=https://hirobius-ops-adrian-6234s-projects.vercel.app/ops/standing
+INTRO_PATH=docs/agents-intro.md
 FRONT_DOOR_START='<!-- ralph:front-door:start — generated from docs/state-surfaces.json by scripts/generate-agents-md.sh; do not hand-edit until the end marker. -->'
 FRONT_DOOR_END='<!-- ralph:front-door:end -->'
 
@@ -52,6 +55,12 @@ jq -e '.surfaces | type == "array"' "$ROOT/$REGISTRY_PATH" >/dev/null 2>&1 || {
   exit 1
 }
 
+[ -f "$ROOT/$INTRO_PATH" ] || {
+  echo "x $INTRO_PATH is missing; it is the hand-written intro this generator includes (title, read order, where live state is)." >&2
+  exit 1
+}
+INTRO=$(cat "$ROOT/$INTRO_PATH")
+
 # index_section <kind> <title> <gloss> — one "### Title" list, or nothing when
 # the registry has no surface of that kind.
 index_section() {
@@ -60,11 +69,11 @@ index_section() {
     def code: "`" + . + "`";
     def upkeep:
       if .kind == "editorial" then "\(.owner), reviewed \(.reviewedAt), re-read within \(.maxAgeDays) days."
-      elif .by == .path then "Generated at runtime."
       else (if .kind == "generated" then "Built" else "Checked" end) + " by \(.by | code)."
       end;
+    def flat: tostring | gsub("[\r\n]+"; " ");
     .surfaces[] | select(.kind == $kind)
-    | "- \(.path | code)\(if .section then " (\(.section))" else "" end): \(.describes). \(upkeep)"
+    | "- \(.path | code)\(if .section then " (\(.section))" else "" end): \(.describes | flat). \(upkeep | flat)"
   ' "$ROOT/$REGISTRY_PATH")
   [ -n "$rows" ] || return 0
   printf '### %s\n\n%s\n\n%s\n\n' "$2" "$3" "$rows"
@@ -72,38 +81,15 @@ index_section() {
 
 build_block() {
   printf '%s\n\n' "$FRONT_DOOR_START"
-  cat <<EOF2
-# AGENTS.md: Ralph
-
-Ralph is the org-level autonomous issue-to-PR loop engine: two reusable GitHub workflows plus a bash kit (\`kit/\`) that hirobius repos vendor.
-
-## Read order
-
-1. \`README.md\`: what the kit does, how a repo adopts it, and how \`v1\` is released.
-2. \`kit/lib.sh\`: the decision functions (reconcile, arming, supervised paths); \`kit/next.sh\` (selection), \`kit/run.sh\` (one iteration), \`kit/loop.sh\`, \`kit/prompt.md\` (the iteration prompt).
-3. \`.github/workflows/\`: the run, gate and triage reusables (each file's header comment is its contract).
-4. \`tests/\`: decision-table tests with \`gh\` and \`git\` stubbed. Run all of them with \`bash tests/run.sh\`; extend them whenever reconcile or selection semantics change.
-
-Rules for working here:
-
-- \`kit/\` is vendored byte-identical by consumer repos. A kit change is a fleet change; the gate's drift guard tells each consumer to re-sync.
-- Callers pin \`@v1\`, which is a branch, not a tag. Only backward-compatible changes move it.
-- A change under \`.github/workflows/\` needs a human push: the bot token lacks the \`workflows\` scope.
-- Generated sections (this file, the test list in \`README.md\`) are rebuilt by their generators, never hand-edited. After changing \`docs/state-surfaces.json\` or \`tests/\`, run \`bash scripts/generate-agents-md.sh\` and \`bash scripts/generate-readme-tests.sh\`.
-
-## Where live state is
-
-Nothing in the repo records the queue, the open work or what is blocked: ops derives them. Read ops \`/ops/standing\` (every verdict from live data): $OPS_STANDING_URL
-
-For one loop's own health (queue order, in-flight PRs, claims, recent runs) run \`kit/status.sh\` (vendored as \`ralph/status.sh\` in a consumer repo). Open work for this repo is GitHub Issues here.
-
+  printf '%s\n\n' "$INTRO"
+  cat <<'EOF2'
 ## Documents and what keeps them true
 
-Built from \`docs/state-surfaces.json\`, which \`scripts/check-state-surfaces.sh\` gates. Re-read an editorial document, bump its \`reviewedAt\` there, then run \`bash scripts/generate-agents-md.sh\`.
+Built from `docs/state-surfaces.json`, which `scripts/check-state-surfaces.sh` gates. Re-read an editorial document, bump its `reviewedAt` there, then run `bash scripts/generate-agents-md.sh`.
 
 EOF2
   index_section generated Generated 'A script builds it; its `--check` fails when it is stale. Do not hand-edit.'
-  index_section checked Checked 'Hand-kept, but a gate compares it with the code.'
+  index_section checked Checked 'Kept true by a named test or gate that exercises it or compares it with the code.'
   index_section editorial Editorial 'Written by a person; the registry carries who, and when it was last re-read.'
   printf '%s' "$FRONT_DOOR_END"
 }
@@ -111,7 +97,7 @@ EOF2
 current=''
 tail=$'\n'
 if [ -f "$ROOT/$AGENTS_PATH" ]; then
-  current=$(read_file "$ROOT/$AGENTS_PATH")
+  read_file current "$ROOT/$AGENTS_PATH"
   case $current in
     *"$FRONT_DOOR_END"*) tail=${current#*"$FRONT_DOOR_END"} ;;
   esac

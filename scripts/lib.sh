@@ -3,28 +3,30 @@
 # Shared helpers for scripts/*.sh (state-surface registry, generated docs).
 # Sourced, never run. Needs bash 4+ and jq (the kit already requires jq).
 
-# read_file <path> — the file's exact bytes on stdout (command substitution
-# alone would eat trailing newlines, and the generators compare exact bytes).
+# read_file <var> <path> — the file's exact bytes in the variable <var>,
+# trailing newlines included (a plain `x=$(cat f)` would eat them, and the
+# generators compare exact bytes).
 read_file() {
   local c
   c=$(
-    cat "$1"
+    cat "$2"
     printf x
   )
-  printf '%s' "${c%x}"
+  printf -v "$1" '%s' "${c%x}"
 }
 
-# replace_block <text> <start-marker> <end-marker> <block> — <text> with
-# everything from the first <start-marker> through the first <end-marker>
-# replaced by <block> (which carries its own markers). Returns 1 when either
-# marker is missing.
+# replace_block <var> <text> <start-marker> <end-marker> <block> — sets <var>
+# to <text> with everything from the first <start-marker> through the first
+# <end-marker> replaced by <block> (which carries its own markers). Returns 1
+# when either marker is missing. Sets a variable rather than printing, so the
+# text's trailing newlines survive.
 replace_block() {
-  local text=$1 start=$2 end=$3 block=$4
+  local var=$1 text=$2 start=$3 end=$4 block=$5
   case $text in
     *"$start"*"$end"*) ;;
     *) return 1 ;;
   esac
-  printf '%s%s%s' "${text%%"$start"*}" "$block" "${text#*"$end"}"
+  printf -v "$var" '%s%s%s' "${text%%"$start"*}" "$block" "${text#*"$end"}"
 }
 
 # day_number <YYYY-MM-DD> — days since 1970-01-01 on stdout; returns 1 when the

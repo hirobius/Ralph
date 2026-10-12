@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # Gate for the state-surface registry (hirobius/ralph#37, spec hirobius/ops#576;
-# a bash port of hds scripts/check-state-surfaces.mjs, minus its derived-fact
-# scan). docs/state-surfaces.json lists every file or section that describes
+# a bash port of hds scripts/check-state-surfaces.mjs (hds#612), minus its
+# derived-fact scan). docs/state-surfaces.json lists every file or section that describes
 # project state, and what keeps it true:
 #
 #   generated  built by a generator (`by`); `check` is the command that proves it fresh
 #   checked    prose or data a named gate (`by`) compares to the code
-#   editorial  hand-written; carries `owner`, `reviewedAt` (YYYY-MM-DD) and
-#              `maxAgeDays`, and goes "review due" when it ages out
+#   editorial  hand-written; carries `owner`, `reviewedAt` (YYYY-MM-DD, not in
+#              the future) and `maxAgeDays`, and goes "review due" when it ages out
 #
 # Rules (the word after file:line in each report):
 #   REGISTRY_MISSING / REGISTRY_INVALID  the registry is absent or malformed
@@ -199,7 +199,13 @@ while IFS= read -r row; do
   review_n=''
   if [ "$kind" = editorial ]; then
     [ -n "$owner" ] || bad 'an editorial surface needs an "owner"'
-    if review_n=$(day_number "$reviewed" 2>/dev/null); then :; else
+    if review_n=$(day_number "$reviewed" 2>/dev/null); then
+      # One day of slack: a local date can lead UTC.
+      if [ "$review_n" -gt $((today_n + 1)) ]; then
+        bad "\"reviewedAt\" $reviewed is in the future (today is $TODAY)"
+        review_n=''
+      fi
+    else
       review_n=''
       bad "\"reviewedAt\" must be a calendar day (YYYY-MM-DD), not \"$reviewed\""
     fi
@@ -239,12 +245,16 @@ while IFS= read -r row; do
       SCAN_LIST+=("$path")
     fi
   fi
-done < <(jq -r '.surfaces[] | [
-    (.path // ""), (.kind // ""), (.describes // ""), (.by // ""), (.owner // ""),
-    (.reviewedAt // ""),
-    (if .maxAgeDays == null then "" elif (.maxAgeDays | type) == "number" then (.maxAgeDays | tostring) else "!" end),
-    (.section // ""), (.check // "")
-  ] | join("\u001f")' "$reg")
+done < <(jq -r '
+    # One row per line: newlines (and the field separator) inside a value
+    # become spaces, so a multi-line "describes" cannot split its row.
+    def flat: tostring | gsub("[\r\n\u001f]+"; " ");
+    .surfaces[] | [
+      (.path // "" | flat), (.kind // "" | flat), (.describes // "" | flat),
+      (.by // "" | flat), (.owner // "" | flat), (.reviewedAt // "" | flat),
+      (if .maxAgeDays == null then "" elif (.maxAgeDays | type) == "number" then (.maxAgeDays | tostring) else "!" end),
+      (.section // "" | flat), (.check // "" | flat)
+    ] | join("\u001f")' "$reg")
 
 # Front-door files are scanned even when unregistered.
 while IFS= read -r f; do

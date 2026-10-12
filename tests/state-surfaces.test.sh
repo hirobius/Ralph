@@ -101,6 +101,39 @@ assert_contains "$RUN_OUT" 'calendar day' "2026-02-30 is not a calendar day"
 assert_contains "$RUN_OUT" 'positive integer' "maxAgeDays must be a positive integer"
 assert_contains "$RUN_OUT" 'kind must be one of' "kind is validated"
 
+new_root future-review
+registry <<EOF2
+{"surfaces":[{"path":"README.md","describes":"x","kind":"editorial","owner":"Adrian","reviewedAt":"2026-10-14","maxAgeDays":90}]}
+EOF2
+gate
+assert_eq 1 "$RUN_CODE" "a reviewedAt in the future fails"
+assert_contains "$RUN_OUT" "in the future" "says why"
+registry <<EOF2
+{"surfaces":[{"path":"README.md","describes":"x","kind":"editorial","owner":"Adrian","reviewedAt":"2026-10-13","maxAgeDays":90}]}
+EOF2
+gate
+assert_eq 0 "$RUN_CODE" "one day ahead is tolerated (a local date can lead UTC)"
+
+new_root multiline-describes
+registry <<EOF2
+{"surfaces":[
+  {"path":"README.md","describes":"first line\nsecond line\r\nthird line","kind":"editorial","owner":"Adrian","reviewedAt":"2026-10-01","maxAgeDays":90},
+  {"path":"docs/gone.md","describes":"next surface\n\nstill parsed","kind":"checked","by":"kit/lib.sh"}]}
+EOF2
+gate
+assert_eq 1 "$RUN_CODE" "a multi-line describes still fails only for the real problem"
+assert_contains "$RUN_OUT" "SURFACE_MISSING" "the surface after a multi-line describes is read as its own row"
+assert_contains "$RUN_OUT" "1 violation(s)" "no row is split into a phantom entry"
+case $RUN_OUT in *'every surface needs a path'*) _fail "no phantom path-less row" ;; *) _ok "no phantom path-less row" ;; esac
+registry <<EOF2
+{"surfaces":[
+  {"path":"README.md","describes":"first line\nsecond line","kind":"editorial","owner":"Adrian\nOwner","reviewedAt":"2026-10-01","maxAgeDays":90},
+  {"path":"kit/lib.sh","describes":"engine\n","kind":"checked","by":"kit/lib.sh"}]}
+EOF2
+gate
+assert_eq 0 "$RUN_CODE" "multi-line fields in editorial and checked rows pass"
+assert_contains "$RUN_OUT" "1 checked, 1 editorial" "both rows are counted"
+
 new_root duplicate
 registry <<EOF2
 {"surfaces":[$EDITORIAL_README,$EDITORIAL_README]}

@@ -23,4 +23,10 @@ assert_eq 0 "$rc" "README's test list matches tests/*.test.sh ($out)"
 out=$(bash "$REPO_DIR/scripts/check-state-surfaces.sh" --run-checks 2>&1) && rc=0 || rc=$?
 assert_eq 0 "$rc" "the state-surface registry holds ($out)"
 
+AGENTS_REAL=$(cat "$REPO_DIR/AGENTS.md")
+assert_contains "$AGENTS_REAL" "the ops dashboard's \`/ops/standing\`" "AGENTS.md points at live state in the ops dashboard"
+assert_contains "$AGENTS_REAL" '`kit/status.sh`' "AGENTS.md points at the loop snapshot"
+case $AGENTS_REAL in *vercel.app*) _fail "AGENTS.md names no ops host" ;; *) _ok "AGENTS.md names no ops host" ;; esac
+[ -z "$(tail -c1 "$REPO_DIR/README.md")" ] && _ok "README.md ends with a newline" || _fail "README.md ends with a newline"
+
 report
