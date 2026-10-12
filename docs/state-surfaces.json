@@ -1,0 +1,71 @@
+{
+  "$comment": "State-surface registry (hirobius/ralph#37, spec hirobius/ops#576). Every file or section that describes project state, and what keeps it true: generated (a generator builds it; `check` proves it fresh), checked (a named gate compares it with the code), editorial (hand-written; owner, reviewedAt and maxAgeDays; scripts/check-state-surfaces.sh warns \"review due\" past maxAgeDays). After re-reading an editorial file, bump its reviewedAt, then run scripts/generate-agents-md.sh: the front door in AGENTS.md prints it. ignoreReferences lists path prefixes that docs name but this repo lacks (the per-repo files a consumer authors, other repos).",
+  "ignoreReferences": [
+    "ralph/",
+    "hirobius/",
+    ".github/workflows/ralph.yml",
+    ".github/PULL_REQUEST_TEMPLATE"
+  ],
+  "surfaces": [
+    {
+      "path": "README.md",
+      "describes": "What the kit and reusable workflows do, how a repo adopts Ralph, how v1 is released",
+      "kind": "editorial",
+      "owner": "Adrian",
+      "reviewedAt": "2026-10-12",
+      "maxAgeDays": 90,
+      "section": "prose"
+    },
+    {
+      "path": "README.md",
+      "describes": "The test list, one line per suite",
+      "kind": "generated",
+      "by": "scripts/generate-readme-tests.sh",
+      "section": "ralph:tests",
+      "check": "bash scripts/generate-readme-tests.sh --check"
+    },
+    {
+      "path": "AGENTS.md",
+      "describes": "The agent front door: what Ralph is, read order, where live state is, index of these documents",
+      "kind": "generated",
+      "by": "scripts/generate-agents-md.sh",
+      "check": "bash scripts/generate-agents-md.sh --check"
+    },
+    {
+      "path": "kit/status.sh",
+      "describes": "Live loop health: queue order, in-flight PRs and wedge state, active claims, recent runs. Nothing is committed; it reads GitHub when run",
+      "kind": "checked",
+      "by": "tests/parked-prs.test.sh"
+    },
+    {
+      "path": "tests",
+      "describes": "The kit's decision-table tests (gh and git stubbed); the same run gates the generated docs and this registry",
+      "kind": "checked",
+      "by": "tests/run.sh"
+    },
+    {
+      "path": "docs/agents-intro.md",
+      "describes": "The hand-written intro of AGENTS.md: what Ralph is, read order, working rules, where live state is. The generator includes it verbatim",
+      "kind": "editorial",
+      "owner": "Adrian",
+      "reviewedAt": "2026-10-12",
+      "maxAgeDays": 90
+    },
+    {
+      "path": "kit/prompt.md",
+      "describes": "The per-iteration prompt consumers vendor: the rules a model iteration follows",
+      "kind": "editorial",
+      "owner": "Adrian",
+      "reviewedAt": "2026-10-12",
+      "maxAgeDays": 90
+    },
+    {
+      "path": ".github/workflows",
+      "describes": "The run, gate and triage reusable workflows; each header comment is that engine's contract",
+      "kind": "editorial",
+      "owner": "Adrian",
+      "reviewedAt": "2026-10-12",
+      "maxAgeDays": 90
+    }
+  ]
+}

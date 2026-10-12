@@ -36,11 +36,9 @@ NAME only — actual secrets live in each caller repo / the org.
 - **Parked PRs** (ops#476): an open Ralph PR labelled `needs-adrian` is parked
   on a human — it does not hold single-flight (run.sh exit 13), and
   `next.sh` never re-picks the issue that owns it.
-- `tests/` — decision-table tests for the kit (`reconcile.test.sh` +
-  `next.test.sh` + `parked-prs.test.sh` + `attempts.test.sh` + `blocked-inference.test.sh` + `closure-verify.test.sh`, `gh`/`git` stubbed, no network; the #86 stall and #126
-  restart loop are both locked cases) run via `.github/workflows/test.yml`
-  with shellcheck. Extend `tests/*.test.sh` whenever reconcile/selection
-  semantics change.
+- `tests/` — decision-table tests for the kit, `gh`/`git` stubbed, no network
+  (the #86 stall and #126 restart loop are both locked cases); see **Tests**
+  below.
 - `.github/workflows/ralph-gate-reusable.yml` — the review gate: **kit-drift
   checksum guard** (vendored `ralph/` vs `kit/`; a PR touching a drifted kit
   file fails, pre-existing drift warns) + per-repo `ralph/gate.sh` +
@@ -66,6 +64,40 @@ NAME only — actual secrets live in each caller repo / the org.
   an optional, executable `ralph/post-close.sh <issue-number>` (looked up
   beside `gate.sh`) — e.g. to run a spec rollup. A missing hook is fine; a
   failing hook only logs a warning.
+
+## Tests
+
+`bash tests/run.sh` runs every suite (CI: `.github/workflows/test.yml`, with
+shellcheck). Extend `tests/*.test.sh` whenever reconcile/selection semantics
+change. The same run checks that the generated docs are fresh
+(`AGENTS.md`, this list) and that `docs/state-surfaces.json` holds: every
+registered path exists, no markdown names a missing path. The suites:
+
+<!-- ralph:tests:start — generated from tests/*.test.sh by scripts/generate-readme-tests.sh; do not hand-edit until the end marker. -->
+
+- `tests/arm-reason.test.sh`: ralph_arm_reason tests (ralph#26).
+- `tests/attempts.test.sh`: Attempt-accounting tests for the selector's budget guard (ops#303).
+- `tests/blocked-inference.test.sh`: Fallback blocked-stop inference (ops#303, the PRIMARY half).
+- `tests/claim-dedupe.test.sh`: Decision-table tests for ralph#17's double-claim dedupe: recent_claim_within (kit/lib.sh) and its wiring into next.sh's selector.
+- `tests/classify-wedged.test.sh`: Decision-table tests for classify_wedged (ralph#16) — the single-flight wedge check must tell "gate is running" from "gate died/never...
+- `tests/close-on-merge.test.sh`: ops#531: a merged Ralph PR whose body names the issue with a closing keyword but left it open must CLOSE the issue (not park it), and...
+- `tests/closure-verify.test.sh`: Post-merge closure verification (ops#305).
+- `tests/default-auto-merge.test.sh`: RALPH_DEFAULT_AUTO_MERGE default (ralph#26).
+- `tests/docs-fresh.test.sh`: The real repo's docs are fresh (ralph#37, spec ops#576).
+- `tests/dod-draft.test.sh`: ops#296: a missing DoD checklist drafts one as a comment instead of a bare park.
+- `tests/gate-arming.test.sh`: Gate arming wiring (ralph#25 / ralph#26).
+- `tests/generated-docs.test.sh`: Generated-docs tests (ralph#37, spec ops#576): scripts/generate-readme-tests.sh (README's test list from tests/*.test.sh) and...
+- `tests/next.test.sh`: Decision-table tests for next.sh — the deterministic selector.
+- `tests/parked-prs.test.sh`: Decision-table tests for ops#476 — a Ralph PR labelled needs-adrian is PARKED on a human and no longer holds single-flight (run.sh exit...
+- `tests/pre-pr-gates.test.sh`: Pre-PR gates (ops#504): tests-with-code hook, /pr body headings, red-first.
+- `tests/reconcile.test.sh`: Decision-table tests for reconcile_issue — the loop's single most safety-critical decision: "the model iteration finished — what...
+- `tests/retry-hop.test.sh`: retry_hop_issue tests (ops#481).
+- `tests/state-surfaces.test.sh`: State-surface registry gate tests (ralph#37, spec ops#576): scripts/check-state-surfaces.sh.
+- `tests/supervised-paths.test.sh`: ralph_diff_is_supervised tests (ralph#25).
+
+<!-- ralph:tests:end -->
+
+Agents working on the kit start at `AGENTS.md`.
 
 ## Add Ralph to a repo
 
