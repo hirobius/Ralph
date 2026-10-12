@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# Test stub for `gh api` as scripts/audit-consumer-pins.sh uses it (ralph#45).
+# Serves a fixture tree, so the audit runs with zero network access:
+#   $PINS_FIX/<owner>__<repo>/workflows.txt   workflow file names, one per line
+#   $PINS_FIX/<owner>__<repo>/<file>          that workflow's yml text
+#   $PINS_FIX/compare_<ref>.txt               ahead_by for <ref>...main
+# A missing fixture exits 1 (an unreadable repo or a failed compare).
+set -uo pipefail
+[ "${1:-}" = api ] || {
+  echo "stub-gh(pins): unhandled: gh $*" >&2
+  exit 1
+}
+path=${2:-}
+case $path in
+  repos/hirobius/ralph/compare/*)
+    ref=${path#repos/hirobius/ralph/compare/}
+    ref=${ref%%...*}
+    [ -f "$PINS_FIX/compare_$ref.txt" ] || exit 1
+    cat "$PINS_FIX/compare_$ref.txt"
+    ;;
+  repos/*/contents/.github/workflows)
+    slug=${path#repos/}
+    slug=${slug%/contents/*}
+    f="$PINS_FIX/${slug/\//__}/workflows.txt"
+    [ -f "$f" ] || exit 1
+    cat "$f"
+    ;;
+  repos/*/contents/.github/workflows/*)
+    slug=${path#repos/}
+    slug=${slug%/contents/*}
+    f="$PINS_FIX/${slug/\//__}/${path##*/}"
+    [ -f "$f" ] || exit 1
+    base64 <"$f"
+    ;;
+  *)
+    echo "stub-gh(pins): unhandled api path: $path" >&2
+    exit 1
+    ;;
+esac

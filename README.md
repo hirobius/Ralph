@@ -7,9 +7,12 @@ NAME only — actual secrets live in each caller repo / the org.
 
 ## What lives here
 
-- `kit/` — the **canonical shared kit** (`lib.sh`, `next.sh`, `run.sh`,
-  `loop.sh`, `status.sh`, `prompt.md`). Consumer repos vendor byte-identical
-  copies under `ralph/`; the gate reusable enforces that (see below). The two
+- `kit/` — the **canonical shared kit**, listed in `kit/MANIFEST.json`
+  (`lib.sh`, `next.sh`, `run.sh`, `loop.sh`, `status.sh`, `prompt.md` and the
+  manifest itself). Consumer repos vendor byte-identical copies under
+  `ralph/`; the gate reusable enforces that through `scripts/kit-drift.sh`,
+  which reads the manifest (see below). A new kit file goes in the manifest
+  in the same change, or `tests/kit-manifest.test.sh` fails. The two
   **per-repo** files — `ralph/gate.sh` and `ralph/config.env` (plus each
   repo's `ralph/README.md`) — are exempt and live only in the consumers.
 - `.github/workflows/ralph-run-reusable.yml` — the run engine: deterministic
@@ -75,6 +78,8 @@ registered path exists, no markdown names a missing path. The suites:
 
 <!-- ralph:tests:start — generated from tests/*.test.sh by scripts/generate-readme-tests.sh; do not hand-edit until the end marker. -->
 
+- `tests/approver-gate.test.sh`: Approver gate wiring (ralph#44): RALPH_APPROVER=off|shadow|on.
+- `tests/approver.test.sh`: Approver Phase 1 (ralph#43, engine side of ops#564): ralph_approver_decide is a pure decision table.
 - `tests/arm-reason.test.sh`: ralph_arm_reason tests (ralph#26).
 - `tests/attempts.test.sh`: Attempt-accounting tests for the selector's budget guard (ops#303).
 - `tests/blocked-inference.test.sh`: Fallback blocked-stop inference (ops#303, the PRIMARY half).
@@ -82,16 +87,23 @@ registered path exists, no markdown names a missing path. The suites:
 - `tests/classify-wedged.test.sh`: Decision-table tests for classify_wedged (ralph#16) — the single-flight wedge check must tell "gate is running" from "gate died/never...
 - `tests/close-on-merge.test.sh`: ops#531: a merged Ralph PR whose body names the issue with a closing keyword but left it open must CLOSE the issue (not park it), and...
 - `tests/closure-verify.test.sh`: Post-merge closure verification (ops#305).
+- `tests/consumer-pins.test.sh`: Consumer pin audit tests (ralph#45, spec #40): scripts/audit-consumer-pins.sh reads each repo's caller workflows through `gh api` and...
 - `tests/default-auto-merge.test.sh`: RALPH_DEFAULT_AUTO_MERGE default (ralph#26).
 - `tests/docs-fresh.test.sh`: The real repo's docs are fresh (ralph#37, spec ops#576).
 - `tests/dod-draft.test.sh`: ops#296: a missing DoD checklist drafts one as a comment instead of a bare park.
+- `tests/fast-sleep.test.sh`: Test speed (ralph#40): retry/backoff sleeps are stubbed in tests, so a retried gh call costs no wall time, and the backoff schedule is...
 - `tests/gate-arming.test.sh`: Gate arming wiring (ralph#25 / ralph#26).
 - `tests/generated-docs.test.sh`: Generated-docs tests (ralph#37, spec ops#576): scripts/generate-readme-tests.sh (README's test list from tests/*.test.sh) and...
+- `tests/kit-lock.test.sh`: kit-lock.sh (ralph#42): consumers pin their vendored kit in ralph/kit.lock.json ({"ref":..., "files":{name: sha256}}, ops#492/#568).
+- `tests/kit-manifest.test.sh`: Kit manifest (ralph#42): kit/MANIFEST.json is the one list of vendored kit files.
 - `tests/next.test.sh`: Decision-table tests for next.sh — the deterministic selector.
 - `tests/parked-prs.test.sh`: Decision-table tests for ops#476 — a Ralph PR labelled needs-adrian is PARKED on a human and no longer holds single-flight (run.sh exit...
 - `tests/pre-pr-gates.test.sh`: Pre-PR gates (ops#504): tests-with-code hook, /pr body headings, red-first.
 - `tests/reconcile.test.sh`: Decision-table tests for reconcile_issue — the loop's single most safety-critical decision: "the model iteration finished — what...
+- `tests/release.test.sh`: Release-train check tests (ralph#45, spec #40): scripts/release.sh refuses a bad tag name, a taken tag, a dirty tree, a HEAD that is not...
+- `tests/result-file.test.sh`: ralph#46 (workflow half of ralph#10): the run reusable turns claude-code-action's execution_file into RALPH_RESULT_FILE, so a silent...
 - `tests/retry-hop.test.sh`: retry_hop_issue tests (ops#481).
+- `tests/runner.test.sh`: tests/run.sh (ralph#40): suites run in parallel, but their output prints in a fixed order (the order given), and the run fails when any...
 - `tests/state-surfaces.test.sh`: State-surface registry gate tests (ralph#37, spec ops#576): scripts/check-state-surfaces.sh.
 - `tests/supervised-paths.test.sh`: ralph_diff_is_supervised tests (ralph#25).
 
@@ -134,9 +146,10 @@ Agents working on the kit start at `AGENTS.md`.
    | `ralph-auto` (issue label) | — | Pre-approves every PR closing this issue. |
    | `RALPH_SUPERVISED_CMD` | empty (no boundary) | Command printing the supervised-path manifest (ops#400); a diff matching it never auto-merges under ANY of the three reasons below — it waits for a human `ralph-approved` instead (ralph#25). |
    | `RALPH_DEFAULT_AUTO_MERGE` | `false` | Opt-in: a green gate + AI-approved PR with NO label at all still arms auto-merge (ralph#26). Still fully subject to the `RALPH_SUPERVISED_CMD` boundary — the flag can never bypass it. Set per-repo in `ralph/config.env`; the engine default is never flipped here. |
+   | `RALPH_APPROVER` | `off` | ralph#44 (ops#564): `shadow` posts the approver's verdict (merge / escalate / park + reason) as a PR comment only; `on` labels escalated or parked PRs `needs-adrian`, quotes the reason on the issue, pages Discord when the approver can't run, and lets a `merge` verdict arm auto-merge (still behind `RALPH_SUPERVISED_CMD`). The table lives in `ralph_approver_decide` (`tests/approver.test.sh`). |
 
-   All three arming reasons (`ralph-approved`, issue `ralph-auto`,
-   `RALPH_DEFAULT_AUTO_MERGE`) are gated by the same supervised-path check —
+   All four arming reasons (`ralph-approved`, issue `ralph-auto`, an
+   approver `merge`, `RALPH_DEFAULT_AUTO_MERGE`) are gated by the same supervised-path check —
    none of them can merge a supervised diff without a human's
    `ralph-approved`.
 7. **Recommended — idle watchdog:** add a `schedule:` trigger to the repo's
@@ -180,5 +193,15 @@ run org-wide with a blank `startup_failure`. Two rails prevent the class:
   new tag, plus a PR per consumer repo updating its callers in the same
   breath. A permission a caller might lack must degrade gracefully in-run
   (fail-soft with the named fix), never be requested at the job level.
+
+**Tag flow for v2 and later (ADR-009 section 2).** Releases after `v1` are
+immutable tags (`v2`, `v2.1.0`), never moved once pushed. `ops` re-pins first;
+`hds` and `site-engine` follow after a week of green ops runs. Rollback is a
+PR re-pinning the previous tag. `scripts/release.sh <tag>` only checks (name,
+tag unused locally and on origin, clean tree, HEAD is `origin/main`, tests
+green) and prints the commits since the previous tag plus the exact
+`git tag -a` and `git push origin refs/tags/<tag>` lines for a person to run.
+`scripts/audit-consumer-pins.sh` shows who runs what: one line per consumer
+use, `repo workflow ref behind`, read-only.
 
 Changes to the engine land here via PR, like everywhere else.
