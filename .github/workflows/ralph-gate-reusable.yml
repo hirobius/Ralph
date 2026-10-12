@@ -33,9 +33,9 @@ name: Ralph gate (reusable)
 # kit/MANIFEST.json's `kit` list, including the manifest itself) is compared
 # byte-for-byte against this repo's canonical kit/ on every PR event, by
 # scripts/kit-drift.sh (ralph#42). Per-repo files (the manifest's `perRepo`:
-# gate.sh, config.env, README.md, post-close.sh) are exempt. A PR that itself touches a drifted kit file FAILS the
-# gate; pre-existing drift on unrelated PRs is a warning annotation, so old
-# drift never blocks new work.
+# gate.sh, config.env, README.md, post-close.sh) are exempt. A PR that itself
+# touches a drifted kit file FAILS the gate; pre-existing drift on unrelated
+# PRs is a warning annotation, so old drift never blocks new work.
 #
 # Verdict posted as a commit STATUS by github-actions[bot].
 # Auth: CLAUDE_CODE_OAUTH_TOKEN; NO API key.
@@ -324,10 +324,11 @@ jobs:
 
       - name: Approver verdict (ralph#44; RALPH_APPROVER=off|shadow|on)
         id: approver
-        if: always() && steps.kitcheck.outcome != 'failure' && steps.kind.outputs.skip != 'true'
+        if: always() && github.event.action != 'labeled' && steps.kitcheck.outcome != 'failure' && steps.kind.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
+          BASE: ${{ github.event.pull_request.base.ref }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
           set -uo pipefail
@@ -348,7 +349,7 @@ jobs:
             gate_outcome="${{ steps.gate.outcome }}"
           fi
           diff_ok=true
-          paths=$(git diff --name-only "origin/${{ github.event.pull_request.base.ref }}...HEAD" 2>/dev/null) || diff_ok=false
+          paths=$(git diff --name-only "origin/$BASE...HEAD" 2>/dev/null) || diff_ok=false
           read -r decision code < <(printf '%s\n' "$paths" |
             ralph_approver_facts "$gate_outcome" verdict.json "$diff_ok" | ralph_approver_decide)
           echo "approver ($mode): $decision $code — $(ralph_approver_reason "$code")" | tee -a "$GITHUB_STEP_SUMMARY"
@@ -367,6 +368,7 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
           PR_URL: ${{ github.event.pull_request.html_url }}
           PR_TITLE: ${{ github.event.pull_request.title }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
           set -euo pipefail
@@ -414,7 +416,7 @@ jobs:
             # ralph#25/#26: one decision for every arming reason. Paths come
             # from the merge base, so a label added later can't skip the
             # boundary. Fail closed when the kit or the diff can't be read.
-            base="${{ github.event.pull_request.base.ref }}"
+            base="$BASE_REF" # via env, never interpolated into the script
             reason=""
             supervised=""
             if ! type ralph_arm_reason >/dev/null 2>&1; then

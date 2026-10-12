@@ -285,6 +285,13 @@ ralph_arm_reason() {
 
 # ------------------------------------------------------------ approver
 
+_ralph_one_of() { # <value> <allowed...> — exact membership
+  local v=$1 a
+  shift
+  for a in "$@"; do [ "$v" = "$a" ] && return 0; done
+  return 1
+}
+
 # ralph_approver_decide — ralph#43, the engine side of ops#564 (ADR-009 §3).
 # A PURE decision table: no gh, no git, nothing read but stdin. Reads facts
 # about a PR's final gate state as `key=value` lines (CRLF, blank lines,
@@ -313,13 +320,6 @@ ralph_arm_reason() {
 # Park wins over escalate: a red PR has nothing to approve. Unreadable input
 # never merges. A model verdict (Phase 2) is only rows 8-9, after every code
 # rule, so it can add an escalation but never clear one.
-_ralph_one_of() { # <value> <allowed...> — exact membership
-  local v=$1 a
-  shift
-  for a in "$@"; do [ "$v" = "$a" ] && return 0; done
-  return 1
-}
-
 ralph_approver_decide() {
   local line k v gate="" review="" supervised="" security="" disagree="" approver="" verdict="" seen=" "
   while IFS= read -r line || [ -n "$line" ]; do

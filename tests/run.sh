@@ -10,15 +10,15 @@ if [ "$#" -gt 0 ]; then
 else
   suites=(./*.test.sh)
 fi
-jobs=${RALPH_TEST_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)}
-[ "$jobs" -ge 1 ] 2>/dev/null || jobs=4
+max_jobs=${RALPH_TEST_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)}
+[ "$max_jobs" -ge 1 ] 2>/dev/null || max_jobs=4
 
 out=$(mktemp -d "${TMPDIR:-/tmp}/ralph-run-XXXXXX")
 trap 'rm -rf "$out"' EXIT
 
 i=0
 for t in "${suites[@]}"; do
-  while [ "$(jobs -rp | wc -l)" -ge "$jobs" ]; do wait -n 2>/dev/null || wait; done # bash<4.3 (macOS): wait for the batch
+  while [ "$(jobs -rp | wc -l)" -ge "$max_jobs" ]; do wait -n 2>/dev/null || wait; done # bash<4.3 (macOS): wait for the batch
   (bash "$t" >"$out/$i.log" 2>&1; echo $? >"$out/$i.rc") &
   i=$((i + 1))
 done
