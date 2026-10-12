@@ -86,6 +86,7 @@ registered path exists, no markdown names a missing path. The suites:
 - `tests/classify-wedged.test.sh`: Decision-table tests for classify_wedged (ralph#16) — the single-flight wedge check must tell "gate is running" from "gate died/never...
 - `tests/close-on-merge.test.sh`: ops#531: a merged Ralph PR whose body names the issue with a closing keyword but left it open must CLOSE the issue (not park it), and...
 - `tests/closure-verify.test.sh`: Post-merge closure verification (ops#305).
+- `tests/consumer-pins.test.sh`: Consumer pin audit tests (ralph#45, spec #40): scripts/audit-consumer-pins.sh reads each repo's caller workflows through `gh api` and...
 - `tests/default-auto-merge.test.sh`: RALPH_DEFAULT_AUTO_MERGE default (ralph#26).
 - `tests/docs-fresh.test.sh`: The real repo's docs are fresh (ralph#37, spec ops#576).
 - `tests/dod-draft.test.sh`: ops#296: a missing DoD checklist drafts one as a comment instead of a bare park.
@@ -97,6 +98,7 @@ registered path exists, no markdown names a missing path. The suites:
 - `tests/parked-prs.test.sh`: Decision-table tests for ops#476 — a Ralph PR labelled needs-adrian is PARKED on a human and no longer holds single-flight (run.sh exit...
 - `tests/pre-pr-gates.test.sh`: Pre-PR gates (ops#504): tests-with-code hook, /pr body headings, red-first.
 - `tests/reconcile.test.sh`: Decision-table tests for reconcile_issue — the loop's single most safety-critical decision: "the model iteration finished — what...
+- `tests/release.test.sh`: Release-train check tests (ralph#45, spec #40): scripts/release.sh refuses a bad tag name, a taken tag, a dirty tree, a HEAD that is not...
 - `tests/retry-hop.test.sh`: retry_hop_issue tests (ops#481).
 - `tests/runner.test.sh`: tests/run.sh (ralph#40): suites run in parallel, but their output prints in a fixed order (the order given), and the run fails when any...
 - `tests/state-surfaces.test.sh`: State-surface registry gate tests (ralph#37, spec ops#576): scripts/check-state-surfaces.sh.
@@ -187,5 +189,15 @@ run org-wide with a blank `startup_failure`. Two rails prevent the class:
   new tag, plus a PR per consumer repo updating its callers in the same
   breath. A permission a caller might lack must degrade gracefully in-run
   (fail-soft with the named fix), never be requested at the job level.
+
+**Tag flow for v2 and later (ADR-009 section 2).** Releases after `v1` are
+immutable tags (`v2`, `v2.1.0`), never moved once pushed. `ops` re-pins first;
+`hds` and `site-engine` follow after a week of green ops runs. Rollback is a
+PR re-pinning the previous tag. `scripts/release.sh <tag>` only checks (name,
+tag unused locally and on origin, clean tree, HEAD is `origin/main`, tests
+green) and prints the commits since the previous tag plus the exact
+`git tag -a` and `git push origin refs/tags/<tag>` lines for a person to run.
+`scripts/audit-consumer-pins.sh` shows who runs what: one line per consumer
+use, `repo workflow ref behind`, read-only.
 
 Changes to the engine land here via PR, like everywhere else.
