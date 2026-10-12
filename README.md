@@ -85,6 +85,7 @@ registered path exists, no markdown names a missing path. The suites:
 - `tests/default-auto-merge.test.sh`: RALPH_DEFAULT_AUTO_MERGE default (ralph#26).
 - `tests/docs-fresh.test.sh`: The real repo's docs are fresh (ralph#37, spec ops#576).
 - `tests/dod-draft.test.sh`: ops#296: a missing DoD checklist drafts one as a comment instead of a bare park.
+- `tests/fast-sleep.test.sh`: Test speed (ralph#40): retry/backoff sleeps are stubbed in tests, so a retried gh call costs no wall time, and the backoff schedule is...
 - `tests/gate-arming.test.sh`: Gate arming wiring (ralph#25 / ralph#26).
 - `tests/generated-docs.test.sh`: Generated-docs tests (ralph#37, spec ops#576): scripts/generate-readme-tests.sh (README's test list from tests/*.test.sh) and...
 - `tests/next.test.sh`: Decision-table tests for next.sh — the deterministic selector.
@@ -92,6 +93,7 @@ registered path exists, no markdown names a missing path. The suites:
 - `tests/pre-pr-gates.test.sh`: Pre-PR gates (ops#504): tests-with-code hook, /pr body headings, red-first.
 - `tests/reconcile.test.sh`: Decision-table tests for reconcile_issue — the loop's single most safety-critical decision: "the model iteration finished — what...
 - `tests/retry-hop.test.sh`: retry_hop_issue tests (ops#481).
+- `tests/runner.test.sh`: tests/run.sh (ralph#40): suites run in parallel, but their output prints in a fixed order (the order given), and the run fails when any...
 - `tests/state-surfaces.test.sh`: State-surface registry gate tests (ralph#37, spec ops#576): scripts/check-state-surfaces.sh.
 - `tests/supervised-paths.test.sh`: ralph_diff_is_supervised tests (ralph#25).
 

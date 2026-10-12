@@ -20,9 +20,15 @@ new_case() { # <name>
   export GH_FIX_DIR="$CASE/fixtures"
   export GH_MUT_LOG="$CASE/mutations.log"
   : >"$GH_MUT_LOG"
+  export SLEEP_LOG="$CASE/sleep.log"
+  : >"$SLEEP_LOG"
   export GITHUB_REPOSITORY="hirobius/test"
   export PATH="$TESTS_DIR/stubs:$ORIG_PATH"
   unset GH_FAIL_PATTERNS GIT_CLAIM_REFS
+}
+
+sleep_log() { # the durations stubbed sleeps were asked for, space-separated
+  tr '\n' ' ' <"$SLEEP_LOG" | sed 's/ $//'
 }
 
 fixture() { # <file>  (content on stdin)
