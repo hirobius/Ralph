@@ -19,10 +19,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Syntax-check kit + tests (bash -n)
-        run: bash -n kit/*.sh tests/*.sh tests/stubs/* scripts/*.sh
+        run: bash -n kit/*.sh tests/*.sh tests/stubs*/* scripts/*.sh
       - name: shellcheck
         # -S warning: the kit predates shellcheck; info/style notes in
         # untouched files must not block engine PRs.
-        run: shellcheck -x -S warning kit/*.sh tests/*.sh tests/stubs/* scripts/*.sh
+        run: shellcheck -x -S warning kit/*.sh tests/*.sh tests/stubs*/* scripts/*.sh
       - name: Kit decision-table tests (reconcile + selection)
         run: bash tests/run.sh

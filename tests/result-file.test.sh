@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2016 # grep patterns below are literal workflow text
 # ralph#46 (workflow half of ralph#10): the run reusable turns
 # claude-code-action's execution_file into RALPH_RESULT_FILE, so a silent
 # failed attempt carries the agent's own final words (reconcile appends the
