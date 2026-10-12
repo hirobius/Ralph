@@ -78,6 +78,7 @@ registered path exists, no markdown names a missing path. The suites:
 
 <!-- ralph:tests:start — generated from tests/*.test.sh by scripts/generate-readme-tests.sh; do not hand-edit until the end marker. -->
 
+- `tests/approver-gate.test.sh`: Approver gate wiring (ralph#44): RALPH_APPROVER=off|shadow|on.
 - `tests/approver.test.sh`: Approver Phase 1 (ralph#43, engine side of ops#564): ralph_approver_decide is a pure decision table.
 - `tests/arm-reason.test.sh`: ralph_arm_reason tests (ralph#26).
 - `tests/attempts.test.sh`: Attempt-accounting tests for the selector's budget guard (ops#303).
@@ -144,9 +145,10 @@ Agents working on the kit start at `AGENTS.md`.
    | `ralph-auto` (issue label) | — | Pre-approves every PR closing this issue. |
    | `RALPH_SUPERVISED_CMD` | empty (no boundary) | Command printing the supervised-path manifest (ops#400); a diff matching it never auto-merges under ANY of the three reasons below — it waits for a human `ralph-approved` instead (ralph#25). |
    | `RALPH_DEFAULT_AUTO_MERGE` | `false` | Opt-in: a green gate + AI-approved PR with NO label at all still arms auto-merge (ralph#26). Still fully subject to the `RALPH_SUPERVISED_CMD` boundary — the flag can never bypass it. Set per-repo in `ralph/config.env`; the engine default is never flipped here. |
+   | `RALPH_APPROVER` | `off` | ralph#44 (ops#564): `shadow` posts the approver's verdict (merge / escalate / park + reason) as a PR comment only; `on` labels escalated or parked PRs `needs-adrian`, quotes the reason on the issue, pages Discord when the approver can't run, and lets a `merge` verdict arm auto-merge (still behind `RALPH_SUPERVISED_CMD`). The table lives in `ralph_approver_decide` (`tests/approver.test.sh`). |
 
-   All three arming reasons (`ralph-approved`, issue `ralph-auto`,
-   `RALPH_DEFAULT_AUTO_MERGE`) are gated by the same supervised-path check —
+   All four arming reasons (`ralph-approved`, issue `ralph-auto`, an
+   approver `merge`, `RALPH_DEFAULT_AUTO_MERGE`) are gated by the same supervised-path check —
    none of them can merge a supervised diff without a human's
    `ralph-approved`.
 7. **Recommended — idle watchdog:** add a `schedule:` trigger to the repo's

@@ -34,6 +34,7 @@ fi
 : "${RALPH_DRY_RUN:=0}"
 : "${RALPH_SUPERVISED_CMD:=}"        # ralph#25: command printing the supervised-path manifest (empty = no boundary configured, today's behaviour)
 : "${RALPH_DEFAULT_AUTO_MERGE:=false}" # ralph#26: opt-in default-on arming; NEVER flip the fleet-wide default here — per-repo config.env only
+: "${RALPH_APPROVER:=off}"              # ralph#44: off | shadow (comment only) | on (escalate/park label needs-adrian; merge arms). Per-repo config.env only
 : "${RALPH_WEDGE_GRACE_MIN:=10}"     # ralph#16: minutes to wait for a ralph-gate run to appear/post before calling it dead
 : "${RALPH_CLAIM_DEDUPE_SECS:=60}"   # ralph#17: a ralph-claim posted more recently than this = the double-claim race, not a distinct trigger
 : "${RALPH_DOD_DRAFT_CMD:=}"         # ops#296: command drafting a DoD checklist from the issue body on stdin (a haiku-model call); empty = heuristic fallback, no workflow wiring required
@@ -247,14 +248,18 @@ ralph_diff_is_supervised() {
 # function inherits that by simply deferring to it, so a broken boundary
 # command blocks arming under every value of every flag/label.
 #
-# Prints exactly one of `ralph-approved` | `issue ralph-auto` |
+# <approver_ok> (optional, ralph#44) is "true" when RALPH_APPROVER=on and
+# ralph_approver_decide said merge; it is one more reason, behind the same
+# boundary, and ranks below the two human labels.
+#
+# Prints exactly one of `ralph-approved` | `issue ralph-auto` | `approver` |
 # `default posture` to stdout and returns 0 when arming is authorized (in
 # that priority order — an explicit approve label or issue tag always wins
 # over the caller's default posture); prints nothing and returns 1 when
 # the diff is supervised, the boundary command failed, or none of
 # pr_ok/issue_ok/RALPH_DEFAULT_AUTO_MERGE authorize it.
 ralph_arm_reason() {
-  local pr_ok="${1:-false}" issue_ok="${2:-false}" paths
+  local pr_ok="${1:-false}" issue_ok="${2:-false}" approver_ok="${3:-false}" paths
   paths="$(cat)"
   if printf '%s\n' "$paths" | ralph_diff_is_supervised >/dev/null; then
     return 1
@@ -265,6 +270,10 @@ ralph_arm_reason() {
   fi
   if [ "$issue_ok" = "true" ]; then
     echo "issue ralph-auto"
+    return 0
+  fi
+  if [ "$approver_ok" = "true" ]; then
+    echo "approver"
     return 0
   fi
   if [ "${RALPH_DEFAULT_AUTO_MERGE:-false}" = "true" ]; then
@@ -373,6 +382,82 @@ ralph_approver_reason() {
     approver-escalated) echo "The approver model asked for a human review." ;;
     policy-clear) echo "Gate green, review approved, no supervised path, no high or critical security finding." ;;
   esac
+}
+
+# ralph_approver_mode — ralph#44. RALPH_APPROVER normalised to off | shadow |
+# on. Anything else is off (named on stderr): a typo must never turn it on.
+ralph_approver_mode() {
+  case "${RALPH_APPROVER:-off}" in
+    off | shadow | on) echo "${RALPH_APPROVER:-off}" ;;
+    *)
+      echo "ralph: RALPH_APPROVER='${RALPH_APPROVER}' is not off|shadow|on — treating it as off" >&2
+      echo off
+      ;;
+  esac
+}
+
+# ralph_approver_facts <gate_outcome> <verdict_file> <diff_ok> — ralph#44.
+# Collects the fact record ralph_approver_decide reads; changed paths on
+# stdin (merge-base diff, one per line). <gate_outcome> is the final gate
+# step's outcome (`success` = green); <verdict_file> the reviewer's
+# verdict.json (missing/unparseable = review=none; a missing or unknown
+# `security` severity = unknown); <diff_ok> false when the diff could not
+# be read (supervised=unknown). disagree=false and approver=off in Phase 1:
+# one reviewer, no model approver (#47 supplies those).
+ralph_approver_facts() {
+  local gate_outcome=${1:-} vf=${2:-} diff_ok=${3:-false} paths review=none security=unknown supervised v
+  paths=$(cat)
+  if [ -r "$vf" ] && v=$(jq -r '.verdict // empty' "$vf" 2>/dev/null) && [ -n "$v" ]; then
+    case "$v" in approve | request_changes) review=$v ;; esac
+    v=$(jq -r '.security // empty' "$vf" 2>/dev/null)
+    case "$v" in none | low | medium | high | critical) security=$v ;; esac
+  fi
+  if [ "$diff_ok" != true ]; then
+    supervised=unknown
+  elif printf '%s\n' "$paths" | ralph_diff_is_supervised >/dev/null; then
+    supervised=true
+  else
+    supervised=false
+  fi
+  printf 'gate=%s\nreview=%s\nsupervised=%s\nsecurity=%s\ndisagree=false\napprover=off\n' \
+    "$([ "$gate_outcome" = success ] && echo green || echo red)" "$review" "$supervised" "$security"
+}
+
+# ralph_approver_act <mode> <pr> <issue|""> <decision> <code> — ralph#44.
+# off: nothing. shadow: one PR comment, never a label. on: escalate/park →
+# `needs-adrian` on the PR (a parked PR frees single-flight, ops#476) and
+# the reason quoted on the linked issue; merge → a PR comment (arming is the
+# merge policy's job, through ralph_arm_reason). An approver that couldn't
+# run, or a park, pages Discord once. gh failures warn, never fail the gate.
+ralph_approver_act() {
+  local mode=$1 pr=$2 issue=${3:-} decision=$4 code=$5 reason
+  reason=$(ralph_approver_reason "$code")
+  case "$mode" in
+    shadow)
+      gh pr comment "$pr" --body "🔎 **approver (shadow): $decision** \`$code\` — $reason No action taken (\`RALPH_APPROVER=shadow\`)." >/dev/null ||
+        echo "ralph: warning — could not post the shadow verdict on PR #$pr" >&2
+      ;;
+    on)
+      if [ "$decision" = merge ]; then
+        gh pr comment "$pr" --body "✅ **approver: merge** \`$code\` — $reason" >/dev/null || true
+        return 0
+      fi
+      ensure_label needs-adrian 5319E7 "Blocked on a human decision"
+      gh pr edit "$pr" --add-label needs-adrian >/dev/null ||
+        echo "ralph: warning — could not label PR #$pr needs-adrian" >&2
+      gh pr comment "$pr" --body "🟡 **approver: $decision** \`$code\` — $reason" >/dev/null || true
+      if [ -n "$issue" ]; then
+        gh issue comment "$issue" --body "$(printf 'Approver: **%s** on PR #%s (`%s`).\n\n> %s' "$decision" "$pr" "$code" "$reason")" >/dev/null ||
+          echo "ralph: warning — could not quote the reason on #$issue" >&2
+      fi
+      case "$decision/$code" in
+        park/* | */approver-unavailable)
+          notify_discord "🟡 **Ralph PR #$pr needs a human** on \`${GITHUB_REPOSITORY:-$(repo_slug 2>/dev/null)}\` — approver: $decision ($code). $reason"
+          ;;
+      esac
+      ;;
+  esac
+  return 0
 }
 
 notify_discord() {
