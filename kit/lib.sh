@@ -859,6 +859,23 @@ record_failed_attempt() { # <n> <run_id> <reason>
   gh issue comment "$1" --body "ralph-attempt-failed $2 — $3" >/dev/null 2>&1 || true
 }
 
+# ralph_extract_result <execution_file> <out> — ralph#46 (workflow half of
+# ralph#10). claude-code-action's execution_file is a JSON array of SDK
+# messages; write the agent's final words to <out>: the last `result`
+# message's text, else the last assistant text block. The run reusable then
+# exports <out> as RALPH_RESULT_FILE, whose tail no_output_note appends to a
+# failed attempt. A missing or unparseable file writes nothing; never fails.
+ralph_extract_result() {
+  local in=${1:-} out=${2:-} text
+  [ -n "$out" ] && [ -r "$in" ] || return 0
+  text=$(jq -r '
+    ([.[] | select(.type == "result") | .result | strings] | last) //
+    ([.[] | select(.type == "assistant") | .message.content[]? | select(.type == "text") | .text] | last) //
+    empty' "$in" 2>/dev/null) || return 0
+  [ -n "$text" ] && printf '%s\n' "$text" >"$out"
+  return 0
+}
+
 # ralph#10: on a genuine no-ship (no branch pushed, no comment of any kind
 # from the model this cycle) the operator gets a park with nothing written by
 # the iteration itself — could be turn/time budget exhaustion, could be a
