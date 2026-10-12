@@ -13,15 +13,16 @@ set -uo pipefail
 repos=("$@")
 [ "${#repos[@]}" -gt 0 ] || repos=(hirobius/ops hirobius/hds hirobius/site-engine)
 
-declare -A behind_cache
+behind_cache="" # "ref=n" lines; plain string, so bash 3.2 (macOS) runs this too
 behind() { # <ref>
   local ref=$1 n
-  if [ -z "${behind_cache[$ref]+x}" ]; then
+  n=$(grep -m1 "^$ref=" <<<"$behind_cache" | cut -d= -f2-)
+  if [ -z "$n" ]; then
     n=$(gh api "repos/hirobius/ralph/compare/$ref...main" --jq .ahead_by 2>/dev/null) || n="?"
     [ -n "$n" ] || n="?"
-    behind_cache[$ref]=$n
+    behind_cache="$behind_cache$ref=$n"$'\n'
   fi
-  printf '%s' "${behind_cache[$ref]}"
+  printf '%s' "$n"
 }
 
 rc=0
