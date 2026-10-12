@@ -87,6 +87,7 @@ registered path exists, no markdown names a missing path. The suites:
 - `tests/dod-draft.test.sh`: ops#296: a missing DoD checklist drafts one as a comment instead of a bare park.
 - `tests/gate-arming.test.sh`: Gate arming wiring (ralph#25 / ralph#26).
 - `tests/generated-docs.test.sh`: Generated-docs tests (ralph#37, spec ops#576): scripts/generate-readme-tests.sh (README's test list from tests/*.test.sh) and...
+- `tests/lessons-drift.test.sh`: The vendored lessons copy in .claude/lessons matches its lock, and the recall hook is wired (ops#610).
 - `tests/next.test.sh`: Decision-table tests for next.sh — the deterministic selector.
 - `tests/parked-prs.test.sh`: Decision-table tests for ops#476 — a Ralph PR labelled needs-adrian is PARKED on a human and no longer holds single-flight (run.sh exit...
 - `tests/pre-pr-gates.test.sh`: Pre-PR gates (ops#504): tests-with-code hook, /pr body headings, red-first.
