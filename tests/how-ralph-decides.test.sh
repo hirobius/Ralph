@@ -19,6 +19,7 @@ run() { # <script> [args...]
   local script=$1
   shift
   RUN_CODE=0
+  # shellcheck disable=SC2034
   RUN_OUT=$(bash "$script" --root "$R" "$@" 2>&1) || RUN_CODE=$?
 }
 
@@ -43,6 +44,7 @@ assert_eq "$OUT1" "$OUT2" "generation is deterministic"
 printf '\nHand edit.\n' >>"$R/docs/HOW-RALPH-DECIDES.md"
 run "$GEN" --check
 assert_eq 1 "$RUN_CODE" "--check fails when file is stale"
+assert_contains "$RUN_OUT" "out of date" "names out of date on stale check"
 
 # ── 2. All ralph_approver_reason codes appear ──────────────────────────────
 new_root codes-check
