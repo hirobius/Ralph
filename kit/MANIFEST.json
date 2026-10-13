@@ -1,0 +1,5 @@
+{
+  "$comment": "The vendored kit (ralph#42). `kit` lists every file a consumer copies byte-identical into ralph/; the gate's drift check (scripts/kit-drift.sh) compares exactly these. `perRepo` lists the files each consumer authors itself; they are never compared. Add a kit file here in the same change that adds it to kit/ (tests/kit-manifest.test.sh fails otherwise).",
+  "kit": ["MANIFEST.json", "lib.sh", "loop.sh", "next.sh", "prompt.md", "run.sh", "status.sh"],
+  "perRepo": ["gate.sh", "config.env", "README.md", "post-close.sh"]
+}

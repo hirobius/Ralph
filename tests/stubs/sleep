@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Test stub for `sleep` (ralph#40): records the requested duration in
+# $SLEEP_LOG and returns at once, so retry/backoff paths cost no wall time.
+# Tests assert the schedule with sleep_log (tests/helpers.sh).
+[ -n "${SLEEP_LOG:-}" ] && printf '%s\n' "$*" >>"$SLEEP_LOG"
+exit 0

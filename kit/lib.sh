@@ -34,6 +34,7 @@ fi
 : "${RALPH_DRY_RUN:=0}"
 : "${RALPH_SUPERVISED_CMD:=}"        # ralph#25: command printing the supervised-path manifest (empty = no boundary configured, today's behaviour)
 : "${RALPH_DEFAULT_AUTO_MERGE:=false}" # ralph#26: opt-in default-on arming; NEVER flip the fleet-wide default here — per-repo config.env only
+: "${RALPH_APPROVER:=off}"              # ralph#44: off | shadow (comment only) | on (escalate/park label needs-adrian; merge arms). Per-repo config.env only
 : "${RALPH_WEDGE_GRACE_MIN:=10}"     # ralph#16: minutes to wait for a ralph-gate run to appear/post before calling it dead
 : "${RALPH_CLAIM_DEDUPE_SECS:=60}"   # ralph#17: a ralph-claim posted more recently than this = the double-claim race, not a distinct trigger
 : "${RALPH_DOD_DRAFT_CMD:=}"         # ops#296: command drafting a DoD checklist from the issue body on stdin (a haiku-model call); empty = heuristic fallback, no workflow wiring required
@@ -247,14 +248,18 @@ ralph_diff_is_supervised() {
 # function inherits that by simply deferring to it, so a broken boundary
 # command blocks arming under every value of every flag/label.
 #
-# Prints exactly one of `ralph-approved` | `issue ralph-auto` |
+# <approver_ok> (optional, ralph#44) is "true" when RALPH_APPROVER=on and
+# ralph_approver_decide said merge; it is one more reason, behind the same
+# boundary, and ranks below the two human labels.
+#
+# Prints exactly one of `ralph-approved` | `issue ralph-auto` | `approver` |
 # `default posture` to stdout and returns 0 when arming is authorized (in
 # that priority order — an explicit approve label or issue tag always wins
 # over the caller's default posture); prints nothing and returns 1 when
 # the diff is supervised, the boundary command failed, or none of
 # pr_ok/issue_ok/RALPH_DEFAULT_AUTO_MERGE authorize it.
 ralph_arm_reason() {
-  local pr_ok="${1:-false}" issue_ok="${2:-false}" paths
+  local pr_ok="${1:-false}" issue_ok="${2:-false}" approver_ok="${3:-false}" paths
   paths="$(cat)"
   if printf '%s\n' "$paths" | ralph_diff_is_supervised >/dev/null; then
     return 1
@@ -267,11 +272,192 @@ ralph_arm_reason() {
     echo "issue ralph-auto"
     return 0
   fi
+  if [ "$approver_ok" = "true" ]; then
+    echo "approver"
+    return 0
+  fi
   if [ "${RALPH_DEFAULT_AUTO_MERGE:-false}" = "true" ]; then
     echo "default posture"
     return 0
   fi
   return 1
+}
+
+# ------------------------------------------------------------ approver
+
+_ralph_one_of() { # <value> <allowed...> — exact membership
+  local v=$1 a
+  shift
+  for a in "$@"; do [ "$v" = "$a" ] && return 0; done
+  return 1
+}
+
+# ralph_approver_decide — ralph#43, the engine side of ops#564 (ADR-009 §3).
+# A PURE decision table: no gh, no git, nothing read but stdin. Reads facts
+# about a PR's final gate state as `key=value` lines (CRLF, blank lines,
+# `#` comments and spaces around keys/values tolerated; unknown keys
+# ignored) and prints exactly one line, `<merge|escalate|park> <code>`,
+# always with exit 0. tests/approver.test.sh holds a case for every row.
+#
+#   gate=green|red                 review=approve|request_changes|none
+#   supervised=true|false|unknown  security=none|low|medium|high|critical|unknown
+#   disagree=true|false            approver=off|ok|error|rate_limited|empty
+#   approver_verdict=merge|escalate   (read only when approver=ok)
+#
+# First match wins:
+#    1 gate=red                                    → park gate-red
+#    2 a fact missing, duplicated or unknown       → escalate unreadable-facts
+#    3 review=request_changes (after self-heal)    → escalate rework-exhausted
+#    4 review=none                                 → escalate no-review
+#    5 supervised=true|unknown                     → escalate supervised-path
+#    6 security=high|critical|unknown              → escalate security-finding
+#    7 disagree=true                               → escalate reviewer-disagreement
+#    8 approver=error|rate_limited|empty, or ok
+#      without a valid verdict                     → escalate approver-unavailable
+#    9 approver=ok + approver_verdict=escalate     → escalate approver-escalated
+#   10 otherwise                                   → merge policy-clear
+#
+# Park wins over escalate: a red PR has nothing to approve. Unreadable input
+# never merges. A model verdict (Phase 2) is only rows 8-9, after every code
+# rule, so it can add an escalation but never clear one.
+ralph_approver_decide() {
+  local line k v gate="" review="" supervised="" security="" disagree="" approver="" verdict="" seen=" "
+  while IFS= read -r line || [ -n "$line" ]; do
+    line=${line%$'\r'}
+    case "$line" in '' | \#*) continue ;; *=*) ;; *) continue ;; esac
+    k=${line%%=*} v=${line#*=}
+    k=${k#"${k%%[![:space:]]*}"} k=${k%"${k##*[![:space:]]}"}
+    v=${v#"${v%%[![:space:]]*}"} v=${v%"${v##*[![:space:]]}"}
+    case "$k" in gate | review | supervised | security | disagree | approver | approver_verdict) ;; *) continue ;; esac
+    case "$seen" in *" $k "*)
+      echo "escalate unreadable-facts"
+      return 0
+      ;;
+    esac
+    seen="$seen$k "
+    case "$k" in
+      gate) gate=$v ;; review) review=$v ;; supervised) supervised=$v ;;
+      security) security=$v ;; disagree) disagree=$v ;; approver) approver=$v ;;
+      approver_verdict) verdict=$v ;;
+    esac
+  done
+  if [ "$gate" = red ]; then echo "park gate-red"; return 0; fi
+  if ! _ralph_one_of "$gate" green ||
+    ! _ralph_one_of "$review" approve request_changes none ||
+    ! _ralph_one_of "$supervised" true false unknown ||
+    ! _ralph_one_of "$security" none low medium high critical unknown ||
+    ! _ralph_one_of "$disagree" true false ||
+    ! _ralph_one_of "$approver" off ok error rate_limited empty; then
+    echo "escalate unreadable-facts"
+    return 0
+  fi
+  case "$review" in
+    request_changes) echo "escalate rework-exhausted"; return 0 ;;
+    none) echo "escalate no-review"; return 0 ;;
+  esac
+  case "$supervised" in true | unknown) echo "escalate supervised-path"; return 0 ;; esac
+  case "$security" in high | critical | unknown) echo "escalate security-finding"; return 0 ;; esac
+  [ "$disagree" = true ] && { echo "escalate reviewer-disagreement"; return 0; }
+  case "$approver/$verdict" in
+    off/*) ;;
+    ok/merge) ;;
+    ok/escalate) echo "escalate approver-escalated"; return 0 ;;
+    *) echo "escalate approver-unavailable"; return 0 ;;
+  esac
+  echo "merge policy-clear"
+}
+
+# ralph_approver_reason <code> — the sentence a verdict comment quotes for a
+# ralph_approver_decide code (ralph#43). Unknown code → prints nothing.
+ralph_approver_reason() {
+  case "${1:-}" in
+    gate-red) echo "The gate is still red after the self-heal round, so there is nothing to approve. Parked for a human to direct the work." ;;
+    unreadable-facts) echo "The approver could not read the PR's state (a fact was missing or unrecognised), so it will not merge by default." ;;
+    rework-exhausted) echo "The reviewer still requests changes after the self-heal round. A human decides whether to merge, fix or close." ;;
+    no-review) echo "The independent review produced no verdict, so nothing vouches for this diff." ;;
+    supervised-path) echo "The diff touches a supervised (revenue or boundary) path. Those merge only with a human's approval." ;;
+    security-finding) echo "The review reported a high or critical security finding (or one of unknown severity)." ;;
+    reviewer-disagreement) echo "The reviewers disagree about this diff." ;;
+    approver-unavailable) echo "The approver could not run (error, rate limit or empty verdict). It never merges by default." ;;
+    approver-escalated) echo "The approver model asked for a human review." ;;
+    policy-clear) echo "Gate green, review approved, no supervised path, no high or critical security finding." ;;
+  esac
+}
+
+# ralph_approver_mode — ralph#44. RALPH_APPROVER normalised to off | shadow |
+# on. Anything else is off (named on stderr): a typo must never turn it on.
+ralph_approver_mode() {
+  case "${RALPH_APPROVER:-off}" in
+    off | shadow | on) echo "${RALPH_APPROVER:-off}" ;;
+    *)
+      echo "ralph: RALPH_APPROVER='${RALPH_APPROVER}' is not off|shadow|on — treating it as off" >&2
+      echo off
+      ;;
+  esac
+}
+
+# ralph_approver_facts <gate_outcome> <verdict_file> <diff_ok> — ralph#44.
+# Collects the fact record ralph_approver_decide reads; changed paths on
+# stdin (merge-base diff, one per line). <gate_outcome> is the final gate
+# step's outcome (`success` = green); <verdict_file> the reviewer's
+# verdict.json (missing/unparseable = review=none; a missing or unknown
+# `security` severity = unknown); <diff_ok> false when the diff could not
+# be read (supervised=unknown). disagree=false and approver=off in Phase 1:
+# one reviewer, no model approver (#47 supplies those).
+ralph_approver_facts() {
+  local gate_outcome=${1:-} vf=${2:-} diff_ok=${3:-false} paths review=none security=unknown supervised v
+  paths=$(cat)
+  if [ -r "$vf" ] && v=$(jq -r '.verdict // empty' "$vf" 2>/dev/null) && [ -n "$v" ]; then
+    case "$v" in approve | request_changes) review=$v ;; esac
+    v=$(jq -r '.security // empty' "$vf" 2>/dev/null)
+    case "$v" in none | low | medium | high | critical) security=$v ;; esac
+  fi
+  if [ "$diff_ok" != true ]; then
+    supervised=unknown
+  elif printf '%s\n' "$paths" | ralph_diff_is_supervised >/dev/null; then
+    supervised=true
+  else
+    supervised=false
+  fi
+  printf 'gate=%s\nreview=%s\nsupervised=%s\nsecurity=%s\ndisagree=false\napprover=off\n' \
+    "$([ "$gate_outcome" = success ] && echo green || echo red)" "$review" "$supervised" "$security"
+}
+
+# ralph_approver_act <mode> <pr> <issue|""> <decision> <code> — ralph#44.
+# off: nothing. shadow: one PR comment, never a label. on: escalate/park →
+# `needs-adrian` on the PR (a parked PR frees single-flight, ops#476) and
+# the reason quoted on the linked issue; merge → a PR comment (arming is the
+# merge policy's job, through ralph_arm_reason). An approver that couldn't
+# run, or a park, pages Discord once. gh failures warn, never fail the gate.
+ralph_approver_act() {
+  local mode=$1 pr=$2 issue=${3:-} decision=$4 code=$5 reason
+  reason=$(ralph_approver_reason "$code")
+  case "$mode" in
+    shadow)
+      gh pr comment "$pr" --body "🔎 **approver (shadow): $decision** \`$code\` — $reason No action taken (\`RALPH_APPROVER=shadow\`)." >/dev/null ||
+        echo "ralph: warning — could not post the shadow verdict on PR #$pr" >&2
+      ;;
+    on)
+      if [ "$decision" = merge ]; then
+        gh pr comment "$pr" --body "✅ **approver: merge** \`$code\` — $reason" >/dev/null || true
+        return 0
+      fi
+      ensure_label needs-adrian 5319E7 "Blocked on a human decision"
+      gh pr edit "$pr" --add-label needs-adrian >/dev/null ||
+        echo "ralph: warning — could not label PR #$pr needs-adrian" >&2
+      gh pr comment "$pr" --body "🟡 **approver: $decision** \`$code\` — $reason" >/dev/null || true
+      if [ -n "$issue" ]; then
+        gh issue comment "$issue" --body "$(printf 'Approver: **%s** on PR #%s (`%s`).\n\n> %s' "$decision" "$pr" "$code" "$reason")" >/dev/null ||
+          echo "ralph: warning — could not quote the reason on #$issue" >&2
+      fi
+      case "$decision/$code" in
+        park/* | */approver-unavailable)
+          notify_discord "🟡 **Ralph PR #$pr needs a human** on \`${GITHUB_REPOSITORY:-$(repo_slug 2>/dev/null)}\` — approver: $decision ($code). $reason"
+          ;;
+      esac
+      ;;
+  esac
+  return 0
 }
 
 notify_discord() {
@@ -756,6 +942,23 @@ This is ops#305. It is not always malformed syntax — PR #360 carried a clean, 
 record_failed_attempt() { # <n> <run_id> <reason>
   [ "$RALPH_DRY_RUN" = "1" ] && return 0
   gh issue comment "$1" --body "ralph-attempt-failed $2 — $3" >/dev/null 2>&1 || true
+}
+
+# ralph_extract_result <execution_file> <out> — ralph#46 (workflow half of
+# ralph#10). claude-code-action's execution_file is a JSON array of SDK
+# messages; write the agent's final words to <out>: the last `result`
+# message's text, else the last assistant text block. The run reusable then
+# exports <out> as RALPH_RESULT_FILE, whose tail no_output_note appends to a
+# failed attempt. A missing or unparseable file writes nothing; never fails.
+ralph_extract_result() {
+  local in=${1:-} out=${2:-} text
+  [ -n "$out" ] && [ -r "$in" ] || return 0
+  text=$(jq -r '
+    ([.[] | select(.type == "result") | .result | strings] | last) //
+    ([.[] | select(.type == "assistant") | .message.content[]? | select(.type == "text") | .text] | last) //
+    empty' "$in" 2>/dev/null) || return 0
+  [ -n "$text" ] && printf '%s\n' "$text" >"$out"
+  return 0
 }
 
 # ralph#10: on a genuine no-ship (no branch pushed, no comment of any kind

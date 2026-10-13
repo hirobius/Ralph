@@ -244,8 +244,14 @@ jobs:
         if: always() && steps.guard.outputs.issue != '' && steps.chain.outputs.chained != 'true' && steps.chain.outputs.hop_failed != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          EXECUTION_FILE: ${{ steps.work.outputs.execution_file }}
         run: |
           set -euo pipefail
+          # ralph#10/#46: the agent's own final words, so a silent failed
+          # attempt explains itself (reconcile appends the tail). A vendored
+          # kit without the helper just skips it.
+          bash ralph/lib.sh ralph_extract_result "$EXECUTION_FILE" "$RUNNER_TEMP/ralph-result.txt" 2>/dev/null || true
+          if [ -s "$RUNNER_TEMP/ralph-result.txt" ]; then export RALPH_RESULT_FILE="$RUNNER_TEMP/ralph-result.txt"; fi
           outcome=$(bash ralph/lib.sh reconcile_issue \
             "${{ steps.guard.outputs.issue }}" "ci-${{ github.run_id }}" \
             "claude step outcome: ${{ steps.work.outcome }}")
