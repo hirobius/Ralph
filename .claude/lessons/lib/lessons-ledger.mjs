@@ -16,6 +16,7 @@
  *                scoped to a repo against that repo's tree (ops#610). A path a
  *                repo lacks, on a row scoped to every repo, just never matches.
  *   enforcement  "none" | "review" | "inject" | "check:<registry id>"
+ *                (a failing check named here prints this row's id: scripts/lib/lesson-notes.mjs)
  *   status       "candidate" | "active" | "enforced" | "obsolete"
  *                (candidates are excluded from recall until triaged, ops#608)
  *   statusReason string | null (required for obsolete: what fixed it)
