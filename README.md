@@ -85,6 +85,7 @@ registered path exists, no markdown names a missing path. The suites:
 - `tests/default-auto-merge.test.sh`: RALPH_DEFAULT_AUTO_MERGE default (ralph#26).
 - `tests/docs-fresh.test.sh`: The real repo's docs are fresh (ralph#37, spec ops#576).
 - `tests/dod-draft.test.sh`: ops#296: a missing DoD checklist drafts one as a comment instead of a bare park.
+- `tests/drift-gates.test.sh`: The vendored skills tooling and guardrail-drift gate fire on drift (fleet drift sweep, ops#552).
 - `tests/gate-arming.test.sh`: Gate arming wiring (ralph#25 / ralph#26).
 - `tests/generated-docs.test.sh`: Generated-docs tests (ralph#37, spec ops#576): scripts/generate-readme-tests.sh (README's test list from tests/*.test.sh) and...
 - `tests/lessons-drift.test.sh`: The vendored lessons copy in .claude/lessons matches its lock, and the recall hook is wired (ops#610).
