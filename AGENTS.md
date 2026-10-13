@@ -34,6 +34,7 @@ A script builds it; its `--check` fails when it is stale. Do not hand-edit.
 
 - `README.md` (ralph:tests): The test list, one line per suite. Built by `scripts/generate-readme-tests.sh`.
 - `AGENTS.md`: The agent front door: what Ralph is, read order, where live state is, index of these documents. Built by `scripts/generate-agents-md.sh`.
+- `docs/HOW-RALPH-DECIDES.md`: Decision tables and priority order for approver and auto-merge arming. Built by `scripts/generate-how-ralph-decides.sh`.
 
 ### Checked
 
