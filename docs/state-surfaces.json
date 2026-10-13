@@ -32,6 +32,13 @@
       "check": "bash scripts/generate-agents-md.sh --check"
     },
     {
+      "path": "docs/HOW-RALPH-DECIDES.md",
+      "describes": "Decision tables and priority order for approver and auto-merge arming",
+      "kind": "generated",
+      "by": "scripts/generate-how-ralph-decides.sh",
+      "check": "bash scripts/generate-how-ralph-decides.sh --check"
+    },
+    {
       "path": "kit/status.sh",
       "describes": "Live loop health: queue order, in-flight PRs and wedge state, active claims, recent runs. Nothing is committed; it reads GitHub when run",
       "kind": "checked",

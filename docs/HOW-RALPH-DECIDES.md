@@ -1,0 +1,33 @@
+<!-- ralph:how-decides:start — generated — do not hand-edit from kit/lib.sh by scripts/generate-how-ralph-decides.sh -->
+
+# How Ralph Decides
+
+How Ralph decides to approve, escalate or arm a pull request is determined by decision tables and priority logic in `kit/lib.sh`.
+
+## Approver Decision Table
+
+The `ralph_approver_decide` function evaluates PR facts against the rules below in row order (first match wins):
+
+| Row | Condition | Decision | Code | Reason |
+| --- | --- | --- | --- | --- |
+| 1 | gate=red | park | `gate-red` | The gate is still red after the self-heal round, so there is nothing to approve. Parked for a human to direct the work. |
+| 2 | a fact missing, duplicated or unknown | escalate | `unreadable-facts` | The approver could not read the PR's state (a fact was missing or unrecognised), so it will not merge by default. |
+| 3 | review=request_changes (after self-heal) | escalate | `rework-exhausted` | The reviewer still requests changes after the self-heal round. A human decides whether to merge, fix or close. |
+| 4 | review=none | escalate | `no-review` | The independent review produced no verdict, so nothing vouches for this diff. |
+| 5 | supervised=true\|unknown | escalate | `supervised-path` | The diff touches a supervised (revenue or boundary) path. Those merge only with a human's approval. |
+| 6 | security=high\|critical\|unknown | escalate | `security-finding` | The review reported a high or critical security finding (or one of unknown severity). |
+| 7 | disagree=true | escalate | `reviewer-disagreement` | The reviewers disagree about this diff. |
+| 8 | approver=error\|rate_limited\|empty, or ok without a valid verdict | escalate | `approver-unavailable` | The approver could not run (error, rate limit or empty verdict). It never merges by default. |
+| 9 | approver=ok + approver_verdict=escalate | escalate | `approver-escalated` | The approver model asked for a human review. |
+| 10 | otherwise | merge | `policy-clear` | Gate green, review approved, no supervised path, no high or critical security finding. |
+
+## Auto-Merge Arming Priority Order
+
+The `ralph_arm_reason` function determines whether auto-merge is armed and under which reason. Arming reasons are evaluated in the following priority order:
+
+1. `ralph-approved` — PR carries the `ralph-approved` label.
+2. `issue ralph-auto` — Linked issue carries the `ralph-auto` label.
+3. `approver` — `RALPH_APPROVER=on` and `ralph_approver_decide` evaluated to `merge`.
+4. `default posture` — `RALPH_DEFAULT_AUTO_MERGE` posture is enabled (`true`).
+
+**Supervised Path Boundary:** A supervised-path diff blocks arming under every reason (including explicit `ralph-approved` and `issue ralph-auto` labels).
