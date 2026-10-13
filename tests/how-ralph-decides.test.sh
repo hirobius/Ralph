@@ -63,8 +63,9 @@ done < <(awk '
   inside && in_case && /esac/ { inside = 0; in_case = 0 }
   inside && in_case {
     sub(/^[ \t]*/, "")
-    if (match($0, /^([A-Za-z0-9_-]+)\)/, m)) {
-      print m[1]
+    if ($0 ~ /^[A-Za-z0-9_-]+\)/) {
+      sub(/\).*/, "")
+      print $0
     }
   }
 ' "$R/kit/lib.sh")

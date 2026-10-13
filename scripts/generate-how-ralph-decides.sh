@@ -51,7 +51,7 @@ done < <(awk '
   inside && /^# *$/ { inside = 0 }
   inside {
     sub(/^# */, "")
-    if (match($0, /^[0-9]+/)) {
+    if ($0 ~ /^[0-9]+/) {
       if (row != "") print row
       row = $0
     } else if (row != "") {
@@ -60,6 +60,11 @@ done < <(awk '
   }
   END { if (row != "") print row }
 ' "$ROOT/$LIB_PATH")
+
+if [ "${#table_rows[@]}" -eq 0 ]; then
+  echo "x parsed 0 decision table rows from $LIB_PATH" >&2
+  exit 1
+fi
 
 # 2. Parse reason case labels from ralph_approver_reason
 reason_codes=()
@@ -71,13 +76,41 @@ done < <(awk '
   inside && in_case && /esac/ { inside = 0; in_case = 0 }
   inside && in_case {
     sub(/^[ \t]*/, "")
-    if (match($0, /^([A-Za-z0-9_-]+)\)/, m)) {
-      print m[1]
+    if ($0 ~ /^[A-Za-z0-9_-]+\)/) {
+      sub(/\).*/, "")
+      print $0
     }
   }
 ' "$ROOT/$LIB_PATH")
 
-# 3. Bi-directional validation
+if [ "${#reason_codes[@]}" -eq 0 ]; then
+  echo "x parsed 0 reason case codes from $LIB_PATH" >&2
+  exit 1
+fi
+
+# 3. Parse arm reasons from ralph_arm_reason
+arm_reasons=()
+while IFS= read -r acode; do
+  [ -n "$acode" ] && arm_reasons+=("$acode")
+done < <(awk '
+  /ralph_arm_reason\(\)/ { inside = 1; next }
+  inside && /^}/ { inside = 0 }
+  inside {
+    if ($0 ~ /echo "[^"]+"/) {
+      str = $0
+      sub(/.*echo "/, "", str)
+      sub(/".*/, "", str)
+      print str
+    }
+  }
+' "$ROOT/$LIB_PATH")
+
+if [ "${#arm_reasons[@]}" -eq 0 ]; then
+  echo "x parsed 0 arm reasons from $LIB_PATH" >&2
+  exit 1
+fi
+
+# 4. Bi-directional validation
 # a) Table code missing reason in ralph_approver_reason
 for code in "${table_codes[@]}"; do
   reason=$(bash "$ROOT/$LIB_PATH" ralph_approver_reason "$code")
@@ -136,10 +169,22 @@ EOF
 
 The `ralph_arm_reason` function determines whether auto-merge is armed and under which reason. Arming reasons are evaluated in the following priority order:
 
-1. `ralph-approved` — PR carries the `ralph-approved` label.
-2. `issue ralph-auto` — Linked issue carries the `ralph-auto` label.
-3. `approver` — `RALPH_APPROVER=on` and `ralph_approver_decide` evaluated to `merge`.
-4. `default posture` — `RALPH_DEFAULT_AUTO_MERGE` posture is enabled (`true`).
+EOF
+
+  local idx=1 acode desc
+  for acode in "${arm_reasons[@]}"; do
+    case "$acode" in
+      ralph-approved) desc="PR carries the \`ralph-approved\` label." ;;
+      "issue ralph-auto") desc="Linked issue carries the \`ralph-auto\` label." ;;
+      approver) desc="\`RALPH_APPROVER=on\` and \`ralph_approver_decide\` evaluated to \`merge\`." ;;
+      "default posture") desc="\`RALPH_DEFAULT_AUTO_MERGE\` posture is enabled (\`true\`)." ;;
+      *) desc="Arming reason \`$acode\`." ;;
+    esac
+    printf '%d. `%s` — %s\n' "$idx" "$acode" "$desc"
+    idx=$((idx + 1))
+  done
+
+  cat <<'EOF'
 
 **Supervised Path Boundary:** A supervised-path diff blocks arming under every reason (including explicit `ralph-approved` and `issue ralph-auto` labels).
 EOF
