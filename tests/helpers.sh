@@ -16,13 +16,19 @@ new_case() { # <name>
   CASE_NAME=$1
   CASE=$(mktemp -d "${TMPDIR:-/tmp}/ralph-test-XXXXXX")
   mkdir -p "$CASE/ralph" "$CASE/fixtures"
-  cp "$REPO_DIR"/kit/*.sh "$REPO_DIR/kit/prompt.md" "$CASE/ralph/"
+  cp "$REPO_DIR"/kit/* "$CASE/ralph/" # = kit/MANIFEST.json (kit-manifest.test.sh)
   export GH_FIX_DIR="$CASE/fixtures"
   export GH_MUT_LOG="$CASE/mutations.log"
   : >"$GH_MUT_LOG"
+  export SLEEP_LOG="$CASE/sleep.log"
+  : >"$SLEEP_LOG"
   export GITHUB_REPOSITORY="hirobius/test"
   export PATH="$TESTS_DIR/stubs:$ORIG_PATH"
   unset GH_FAIL_PATTERNS GIT_CLAIM_REFS
+}
+
+sleep_log() { # the durations stubbed sleeps were asked for, space-separated
+  tr '\n' ' ' <"$SLEEP_LOG" | sed 's/ $//'
 }
 
 fixture() { # <file>  (content on stdin)

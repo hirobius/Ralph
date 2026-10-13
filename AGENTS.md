@@ -34,12 +34,15 @@ A script builds it; its `--check` fails when it is stale. Do not hand-edit.
 
 - `README.md` (ralph:tests): The test list, one line per suite. Built by `scripts/generate-readme-tests.sh`.
 - `AGENTS.md`: The agent front door: what Ralph is, read order, where live state is, index of these documents. Built by `scripts/generate-agents-md.sh`.
+- `docs/HOW-RALPH-DECIDES.md`: Decision tables and priority order for approver and auto-merge arming. Built by `scripts/generate-how-ralph-decides.sh`.
 
 ### Checked
 
 Kept true by a named test or gate that exercises it or compares it with the code.
 
 - `kit/status.sh`: Live loop health: queue order, in-flight PRs and wedge state, active claims, recent runs. Nothing is committed; it reads GitHub when run. Checked by `tests/parked-prs.test.sh`.
+- `scripts/release.sh`: Release preflight: refuses a bad or taken tag, a dirty tree, a HEAD that is not origin/main and red tests; prints the git tag and push commands, never runs them. Checked by `tests/release.test.sh`.
+- `scripts/audit-consumer-pins.sh`: Which ralph ref each consumer repo pins and how far behind main it is; read-only, reads GitHub when run. Checked by `tests/consumer-pins.test.sh`.
 - `tests`: The kit's decision-table tests (gh and git stubbed); the same run gates the generated docs and this registry. Checked by `tests/run.sh`.
 
 ### Editorial

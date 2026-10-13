@@ -32,10 +32,29 @@
       "check": "bash scripts/generate-agents-md.sh --check"
     },
     {
+      "path": "docs/HOW-RALPH-DECIDES.md",
+      "describes": "Decision tables and priority order for approver and auto-merge arming",
+      "kind": "generated",
+      "by": "scripts/generate-how-ralph-decides.sh",
+      "check": "bash scripts/generate-how-ralph-decides.sh --check"
+    },
+    {
       "path": "kit/status.sh",
       "describes": "Live loop health: queue order, in-flight PRs and wedge state, active claims, recent runs. Nothing is committed; it reads GitHub when run",
       "kind": "checked",
       "by": "tests/parked-prs.test.sh"
+    },
+    {
+      "path": "scripts/release.sh",
+      "describes": "Release preflight: refuses a bad or taken tag, a dirty tree, a HEAD that is not origin/main and red tests; prints the git tag and push commands, never runs them",
+      "kind": "checked",
+      "by": "tests/release.test.sh"
+    },
+    {
+      "path": "scripts/audit-consumer-pins.sh",
+      "describes": "Which ralph ref each consumer repo pins and how far behind main it is; read-only, reads GitHub when run",
+      "kind": "checked",
+      "by": "tests/consumer-pins.test.sh"
     },
     {
       "path": "tests",
