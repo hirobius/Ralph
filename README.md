@@ -97,6 +97,7 @@ registered path exists, no markdown names a missing path. The suites:
 - `tests/how-ralph-decides.test.sh`: How Ralph Decides doc generator tests: scripts/generate-how-ralph-decides.sh (docs/HOW-RALPH-DECIDES.md generated from kit/lib.sh...
 - `tests/kit-lock.test.sh`: kit-lock.sh (ralph#42): consumers pin their vendored kit in ralph/kit.lock.json ({"ref":..., "files":{name: sha256}}, ops#492/#568).
 - `tests/kit-manifest.test.sh`: Kit manifest (ralph#42): kit/MANIFEST.json is the one list of vendored kit files.
+- `tests/lessons-drift.test.sh`: The vendored lessons copy in .claude/lessons matches its lock, and the recall hook is wired (ops#610).
 - `tests/next.test.sh`: Decision-table tests for next.sh — the deterministic selector.
 - `tests/parked-prs.test.sh`: Decision-table tests for ops#476 — a Ralph PR labelled needs-adrian is PARKED on a human and no longer holds single-flight (run.sh exit...
 - `tests/pre-pr-gates.test.sh`: Pre-PR gates (ops#504): tests-with-code hook, /pr body headings, red-first.
